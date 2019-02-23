@@ -12,3 +12,4 @@
 
    installation
    first-step
+   basic
