@@ -19,7 +19,7 @@
 
 # -- Project information -----------------------------------------------------
 
-project = 'a-byte-of-haskell'
+project = 'Haskell 简明教程'
 copyright = '2019, An Long'
 author = 'An Long'
 
@@ -83,6 +83,9 @@ html_theme = 'sphinx_typlog_theme'
 #
 html_theme_options = {
     'analytics_id': 'UA-23075420-8',
+    'logo': 'haskell.png',
+    'github_user': 'aisk',
+    'github_repo': 'a-byte-of-haskell',
 }
 
 # Add any paths that contain custom static files (such as style sheets) here,
@@ -97,8 +100,15 @@ html_static_path = ['_static']
 # defined by theme itself.  Builtin themes are using these templates by
 # default: ``['localtoc.html', 'relations.html', 'sourcelink.html',
 # 'searchbox.html']``.
-#
-# html_sidebars = {}
+
+html_sidebars = {
+    '**': [
+        'logo.html',
+        'github.html',
+        'globaltoc.html',
+        'searchbox.html',
+    ],
+}
 
 
 # -- Options for HTMLHelp output ---------------------------------------------
