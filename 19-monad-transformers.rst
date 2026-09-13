@@ -3,12 +3,13 @@
 
 在前面的章节中，我们分别掌握了处理各种不同效果的单子：\ ``Maybe``\ （处理缺失）、\ ``Either``\ （错误处理）、\ ``Reader``\ （配置注入）、\ ``State``\ （状态演化）以及 ``IO``\ （物理副作用）。
 
-但在真实工业级项目中，我们往往\ **需要同时拥有多种能力**\ ：例如一个 Web 接口既要读取全局配置、又要访问数据库、还要维护请求局部状态，并在出现校验失败时优雅抛错短路。
+但在真实的工业级项目中，我们往往\ **需要同时拥有多种能力**\ ：例如一个 Web 接口既要读取全局配置、又要访问数据库 IO、还要维护请求上下文状态，并在出现校验失败时优雅抛错短路。
 
-为什么 Monad 无法自由复合？
+为什么 Monad 无法自动自由复合？
 --------------------------------------------------------------------------------
 
 在范畴论中存在一个经典事实：
+
 - 任意两个 ``Functor`` 的嵌套组合天然也是一个合法的 ``Functor``\ 。
 - 任意两个 ``Applicative`` 的嵌套组合天然也是一个合法的 ``Applicative``\ 。
 - **但任意两个 Monad 的嵌套，却无法通用地自动复合为一个新的 Monad！**
@@ -20,7 +21,7 @@
 变换子家族：给现有单子附加超能力
 --------------------------------------------------------------------------------
 
-通常，变换子以大写字母 ``T`` 结尾，定义在 ``transformers`` 库中：
+通常，变换子以大写字母 ``T`` 结尾，定义在 ``transformers`` 与 ``mtl`` 库中：
 
 - **MaybeT m a**\ ：给基础单子 ``m`` 附加缺失处理能力，内部包裹 ``m (Maybe a)``\ 。
 - **ExceptT e m a**\ ：给基础单子 ``m`` 附加异常错误处理能力，内部包裹 ``m (Either e a)``\ 。
@@ -51,42 +52,60 @@
 
 无论你的栈堆叠了多少层变换子，只需一个 ``liftIO``\ ，就能立刻穿透整个栈直达底层执行 IO 操作。
 
-实战构建：多层应用服务栈
+变换子堆叠顺序的语义差异
 --------------------------------------------------------------------------------
 
-构建一个兼备配置注入、错误短路与 IO 能力的应用栈：
+单子变换子的堆叠顺序绝非无关紧要，**不同的堆叠顺序代表完全不同的业务容错语义**\ 。
+
+对比以下两种经典组合：
+
+1. **StateT 在内，ExceptT 在外（\ ``ExceptT e (State s) a``\ ）**\ ：
+   - 底层结构等价于：\ ``s -> (Either e a, s)``\ 。
+   - **语义**\ ：即使计算抛出错误（\ ``throwError``\ ），错误分支依然与状态并列，\ **发生错误前的状态修改会被完整保留**\ ！
+2. **ExceptT 在内，StateT 在外（\ ``StateT s (Except e) a``\ ）**\ ：
+   - 底层结构等价于：\ ``s -> Either e (a, s)``\ 。
+   - **语义**\ ：一旦抛出错误，整个状态元组被抛弃，\ **所有之前的状态变更全部回滚丢失**\ （如同数据库事务回滚）。
+
+在架构设计时，必须根据业务是否需要“错误回滚”严格决定变换子的嵌套层级。
+
+现代工业标准：ReaderT 架构设计模式
+--------------------------------------------------------------------------------
+
+在过去，开发者常喜欢堆叠 5 到 6 层复杂的变换子。然而现代 Haskell 工业界普遍推崇更为务实轻量的 **ReaderT 设计模式（The ReaderT Pattern）**\ ：
+
+**核心思想**\ ：将应用的核心单子统一固化为 ``ReaderT Env IO``\ ，把数据库连接池、日志句柄、可变内存变量（``IORef`` / ``TVar``）全部装入环境结构体 ``Env`` 中：
 
 .. code:: haskell
 
+   {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+
    import Control.Monad.Reader
-   import Control.Monad.Except
 
-   data Env = Env { serverPort :: Int }
-   type App = ReaderT Env (ExceptT String IO)
+   data Env = Env
+     { appPort  :: !Int
+     , appDbUrl :: !String
+     }
 
-   runApp :: Env -> App a -> IO (Either String a)
-   runApp env app = runExceptT (runReaderT app env)
+   -- 使用 newtype 封装单一层级的 ReaderT Env IO
+   newtype App a = App
+     { unApp :: ReaderT Env IO a
+     } deriving (Functor, Applicative, Monad, MonadReader Env, MonadIO)
 
-   serviceHandler :: App ()
-   serviceHandler = do
-     port <- asks serverPort
-     liftIO $ putStrLn $ "服务启动中，监听端口: " ++ show port
-     if port < 1024
-       then throwError "非特权用户无法监听特权端口！"
-       else liftIO $ putStrLn "服务启动成功。"
+   runApp :: Env -> App a -> IO a
+   runApp env action = runReaderT (unApp action) env
 
-现代工程标杆：MTL 风格（Monad Transformer Library）
---------------------------------------------------------------------------------
+   -- 业务函数清爽优雅，天然拥有环境注入与 IO 穿透能力：
+   startServer :: App ()
+   startServer = do
+     port <- asks appPort
+     liftIO $ putStrLn $ "服务在端口 " ++ show port ++ " 上平稳启动..."
 
-传统具象变换子栈的痛点
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-如果我们在所有业务代码中都写死具体的单子栈类型 ``App``\ ，并到处充斥着 ``lift``\ ，一旦某天架构重构（例如需要额外增加一层 ``StateT``\ ），原先所有业务代码的 ``lift`` 层级都会全部失效！
+这种模式结构简单、性能极致，且彻底规避了复杂的变换子性能开销。
 
 MTL 风格：基于类型类约束面向接口编程
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+--------------------------------------------------------------------------------
 
-MTL（Monad Transformer Library）是现代 Haskell 大型软件的绝对主流范式。它的核心思想是：\ **业务逻辑不声明具体的变换子栈，而是通过类型类对环境能力提出需求约束**\ ：
+如果要在大型系统中实现极致的组件解耦，可以使用 MTL 风格。业务函数完全不绑定具体的单子栈，而是通过类型类约束声明其能力需求：
 
 - 需要读配置？声明约束：\ ``MonadReader Env m``
 - 需要抛异常？声明约束：\ ``MonadError String m``
@@ -94,13 +113,26 @@ MTL（Monad Transformer Library）是现代 Haskell 大型软件的绝对主流�
 
 .. code:: haskell
 
-   -- 业务函数完全不绑定具体的单子栈！
+   import Control.Monad.Reader
+   import Control.Monad.Except
+
    pureBusinessLogic :: (MonadReader Env m, MonadError String m, MonadIO m) => m ()
    pureBusinessLogic = do
-     port <- asks serverPort
+     port <- asks appPort
      liftIO $ putStrLn $ "当前端口: " ++ show port
-     when (port < 1024) $ throwError "非法端口"
+     if port < 1024
+       then throwError "非特权端口错误"
+       else liftIO $ putStrLn "校验通过。"
 
-**MTL 风格的巨大工程价值**\ ：
-1. **解耦调用层级**\ ：不再需要手写任何繁琐的 ``lift``\ ，MTL 的实例机制会自动替你跨层寻址。
-2. **极速单元测试**\ ：在生产运行中使用真实的 ``ReaderT Env (ExceptT String IO)``\ ；在自动化单元测试中，可以直接用纯内存的 Dummy 纯函数类型运行，完全无需模拟真实的外部 IO 依赖！
+**工程价值**\ ：
+1. **解耦调用层级**\ ：不再需要手写任何繁琐的 ``lift``\ ，MTL 的实例机制会自动跨层寻址。
+2. **极速单元测试**\ ：在自动化测试中，可以直接传入纯内存的 Mock 单子运行，完全无需拉起真实的外部网络与数据库环境。
+
+小结
+--------------------------------------------------------------------------------
+
+- Monad 无法自动复合，需借助单子变换子（Monad Transformers）按需叠加能力。
+- ``lift`` 跨层提升动作，\ ``liftIO`` 穿透整个单子栈直达 IO。
+- 变换子堆叠顺序直接决定错误发生时状态是否持久化或回滚。
+- 现代工程推崇以 ``ReaderT Env IO`` 为核心的轻量架构，兼具简洁性与高性能。
+- MTL 风格基于类型类抽象能力契约，为大型应用提供卓越的模块解耦与可测试性。
