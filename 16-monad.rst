@@ -87,14 +87,21 @@ do 记号与脱糖规则
 
 .. tip::
 
-   **如果你熟悉其他语言**\ ：
+   **如果你熟悉其他语言：把 Monad 理解为 “Chainable” / “FlatMappable” / “AndThen-able”**\ ：
 
-   - **直觉通俗化**\ ：``FlatMappable`` / ``Chainable``\ （支持自动拍平的动态链式调用）。
-   - **跨语言映射**\ ：
+   - **通俗直觉**\ ：``FlatMappable`` / ``Chainable`` / ``AndThen-able``\ （支持自动拍平的动态依赖流水线）。核心操作是 ``>>=``\ （即 ``flatMap``\ ）。
+   - **各大现代语言的动词化落地**\ ：
 
-     - **JavaScript / TypeScript**\ ：``Promise.prototype.then(...)``\ 。注意：在 JS 中，若你在 ``then`` 的回调中返回一个新 Promise，运行时会自动将其展平，绝不会产生 ``Promise<Promise<T>>``——这正是 Monad 拍平嵌套上下文的核心能力！
-     - **Java**\ ：``Optional.flatMap(...)``\ 、\ ``Stream.flatMap(...)``\ 、\ ``CompletableFuture.thenCompose(...)``\ 。
-     - **Rust**\ ：``Option::and_then(...)``\ 、\ ``Result::and_then(...)``\ ，以及广受好评的 ``?`` 错误传播操作符（``?`` 本质上就是在 ``Result`` 单子中执行带提前短路返回的 ``>>=``\ ）。
+     - **Elm**\ ：直接命名为 ``andThen``\ ——当前一步计算产生值后，“然后（and then）”将该值交给下一步生成新的包装上下文。
+     - **Rust**\ ：标准库命名为 ``Option::and_then(...)`` 与 ``Result::and_then(...)``\ ，而广泛使用的 ``?`` 错误传播操作符本质上也是在 ``Result`` 单子中执行带提前短路返回的 ``>>=``\ 。
+     - **JavaScript / TypeScript**\ ：``Promise.prototype.then(...)``\ 。在 JS 中，若你在 ``then`` 的回调中返回一个新 Promise，运行时会自动将其展平，绝不会产生 ``Promise<Promise<T>>``——这正是 Monad 拍平嵌套上下文（\ ``join``\ ）的核心能力！
+     - **Java / Scala**\ ：``Optional.flatMap(...)``\ 、\ ``Stream.flatMap(...)``\ 、\ ``CompletableFuture.thenCompose(...)``\ 。
+
+   - **盒子的进化阶梯（Functor -> Applicative -> Monad）**\ ：
+
+     - **Functor（\ ``map``\ ）**\ ：单个盒子。函数只作用于盒子内部的值，盒子结构原样保留。
+     - **Applicative（\ ``andMap`` / ``map2``\ ）**\ ：多个\ **相互独立**\ 的盒子。把各个盒子里包裹的值装配、凑到一起，盒子之间无先后因果。
+     - **Monad（\ ``andThen`` / ``flatMap``\ ）**\ ：\ **有前后因果依赖**\ 的盒子。后一个盒子的创建完全依赖于前一个盒子解开后的值，支持动态决策与短路。
 
    - **“可编程的分号”**\ ：
 
