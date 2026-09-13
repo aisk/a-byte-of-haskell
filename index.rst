@@ -10,7 +10,7 @@
 
 .. toctree::
    :maxdepth: 2
-   :caption: 模块一：函数式基石与环境
+   :caption: 第一部分：函数式基石与环境
 
    01-lambda
    02-environment
@@ -18,7 +18,7 @@
 
 .. toctree::
    :maxdepth: 2
-   :caption: 模块二：类型系统核心
+   :caption: 第二部分：类型系统核心
 
    04-types
    05-typeclasses
@@ -27,7 +27,7 @@
 
 .. toctree::
    :maxdepth: 2
-   :caption: 模块三：常用数据结构与集合容器
+   :caption: 第三部分：常用数据结构与集合容器
 
    08-lists
    09-folds
@@ -37,7 +37,7 @@
 
 .. toctree::
    :maxdepth: 2
-   :caption: 模块四：抽象代数与函子单子体系
+   :caption: 第四部分：抽象代数与函子单子体系
 
    13-monoid
    14-functor
@@ -47,7 +47,7 @@
 
 .. toctree::
    :maxdepth: 2
-   :caption: 模块五：深入计算与工程实践
+   :caption: 第五部分：深入计算与工程实践
 
    18-reader-state
    19-monad-transformers
