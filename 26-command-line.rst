@@ -1,15 +1,16 @@
-命令行程序：参数、环境变量与 getOpt
+命令行程序：参数、环境变量与选项解析
 ================================================================================
 
-命令行工具是 Haskell 最容易上手的实际项目。本章介绍写一个命令行程序需要的几样东西：读取参数和环境变量、用退出码报告结果、把标准输入当作数据来源、调用外部命令，以及用 ``System.Console.GetOpt`` 解析选项。
+命令行工具是 Haskell 最容易上手的实际项目。本章介绍写一个命令行程序需要的几样东西：读取参数和环境变量、用退出码报告结果、把标准输入当作数据来源、调用外部命令，以及解析选项的三种方式：手写模式匹配、\ ``base`` 自带的 ``getOpt``\ 、第三方库 ``optparse-applicative``\ 。
 
-这些模块全部在 ``base`` 里，只有调用外部命令用到的 ``process`` 是单独的包。它随 GHC 一起发布，但要写进 ``build-depends``\ ：
+这些模块大部分在 ``base`` 里。调用外部命令用到的 ``process`` 随 GHC 一起发布，最后一节的 ``optparse-applicative`` 需要从 Hackage 安装，两者都要写进 ``build-depends``\ ：
 
 .. code:: text
 
    build-depends:    base >= 4.14 && < 5
                    , text >= 2.0
                    , process >= 1.6
+                   , optparse-applicative >= 0.17
 
 参数与环境变量
 --------------------------------------------------------------------------------
@@ -174,15 +175,57 @@
 
 参数以列表传入，不经过 shell，所以不需要考虑空格和引号的转义。确实需要 shell 特性（管道、通配符）时，用 ``callCommand "ls *.hs | wc -l"``\ 。
 
-用 getOpt 解析选项
+解析选项：三个层次
 --------------------------------------------------------------------------------
 
-参数少的时候，直接对 ``getArgs`` 的结果做模式匹配就够了。一旦出现 ``-v``\ 、\ ``--output FILE`` 这类选项，手写解析很快会变得繁琐。\ ``base`` 自带的 ``System.Console.GetOpt`` 实现了 GNU 风格的选项解析，不需要额外依赖。
+``getArgs`` 只是把命令行按空格切开交给你，\ ``-v``\ 、\ ``--output FILE`` 这类选项要自己识别。按程序的复杂程度，有三种做法：直接对参数列表做模式匹配、用 ``base`` 自带的 ``getOpt``\ 、用第三方库 ``optparse-applicative``\ 。前两种简单介绍，重点放在第三种，因为它很好地展示了 Haskell 做抽象的方式。
 
-描述选项
+第一层：直接匹配参数列表
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-每个选项用一个 ``OptDescr a`` 值描述：
+参数只有一两个、位置固定时，对 ``getArgs`` 的结果做模式匹配就够了：
+
+.. code:: haskell
+
+   module Main (main) where
+
+   import System.Environment (getArgs)
+   import System.Exit (exitFailure)
+   import System.IO (hPutStrLn, stderr)
+
+   main :: IO ()
+   main = do
+     args <- getArgs
+     case args of
+       [path] -> run False path
+       ["-v", path] -> run True path
+       _ -> do
+         hPutStrLn stderr "用法: manual [-v] FILE"
+         exitFailure
+     where
+       run verbose path = do
+         content <- readFile path
+         if verbose
+           then putStrLn (path ++ ": " ++ show (length (lines content)) ++ " 行")
+           else print (length (lines content))
+
+.. code:: sh
+
+   $ runghc Manual.hs notes.txt
+   3
+   $ runghc Manual.hs -v notes.txt
+   notes.txt: 3 行
+   $ runghc Manual.hs notes.txt -v
+   用法: manual [-v] FILE
+
+这种写法的问题是每一种参数组合都要写一个分支。\ ``-v`` 能不能放在文件名后面、能不能和别的选项同时出现，取决于你列举了哪些模式。选项一多，分支数量会爆炸。
+
+第二层：getOpt
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``base`` 自带的 ``System.Console.GetOpt`` 实现了 GNU 风格的选项识别：短选项 ``-v``\ 、长选项 ``--verbose``\ 、带参数的 ``-o FILE`` 与 ``--output=FILE``\ 、多个短选项合写 ``-vl``\ ，选项和普通参数可以任意交错。
+
+每个选项用一个 ``OptDescr a`` 值描述，\ ``getOpt`` 把参数列表变成三样东西：
 
 .. code:: haskell
 
@@ -193,54 +236,118 @@
      String        -- 帮助文本
 
    data ArgDescr a
-     = NoArg a                       -- 不带参数，如 -v
-     | ReqArg (String -> a) String   -- 必须带参数，如 -o FILE；第二项是参数的占位名
+     = NoArg a                            -- 不带参数，如 -v
+     | ReqArg (String -> a) String        -- 必须带参数，如 -o FILE；第二项是参数的占位名
      | OptArg (Maybe String -> a) String  -- 参数可选
 
-类型参数 ``a`` 是"解析出一个选项后得到什么值"。最常见的做法是让 ``a`` 为 ``Options -> Options``\ ，也就是一个修改配置记录的函数。这么做的原因下面会解释。
-
-解析
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-.. code:: haskell
-
    getOpt :: ArgOrder a -> [OptDescr a] -> [String] -> ([a], [String], [String])
+   --                                                    选项值  普通参数  错误信息
 
    usageInfo :: String -> [OptDescr a] -> String
 
-``getOpt`` 接收参数顺序策略、选项描述列表和 ``getArgs`` 的结果，返回一个三元组：
-
-1. 解析出的选项值列表；
-2. 非选项参数，例如文件名；
-3. 错误信息，例如未知选项或缺少参数。列表为空表示解析成功。
-
-``ArgOrder`` 决定选项和普通参数混在一起时怎么处理：
-
-- ``Permute``\ ：选项和普通参数可以任意交错，\ ``prog a.txt -l b.txt`` 与 ``prog -l a.txt b.txt`` 等价。这是最常用的选择。
-- ``RequireOrder``\ ：遇到第一个非选项参数后，后面的内容全部当作普通参数。适合 ``prog [选项] 子命令 [子命令的参数]`` 这种结构。
-- ``ReturnInOrder f``\ ：把每个非选项参数也通过 ``f`` 转成选项值，保持它们在命令行中的相对顺序。
-
-``usageInfo`` 根据同一份描述列表生成帮助文本，第一个参数是放在开头的说明行。
-
-``getOpt`` 支持的写法与 GNU 工具一致：短选项 ``-l``\ 、长选项 ``--lines``\ 、带参数的 ``-o out.txt``\ 、\ ``-oout.txt``\ 、\ ``--output out.txt``\ 、\ ``--output=out.txt``\ ，以及多个短选项合写 ``-lw``\ 。长选项写前缀也能识别，只要不产生歧义。
-
-为什么选项值是函数
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-``getOpt`` 返回的是一个列表 ``[a]``\ ，它本身不知道怎么把多个选项合并成一份配置。如果 ``a`` 是一个专门的和类型（\ ``Verbose | Output FilePath | ...``\ ），后续还要再写一遍模式匹配去填充记录。
-
-让 ``a = Options -> Options`` 就省掉了这一步。每个选项自带"如何修改配置"的知识，解析结果是一串修改函数，从默认配置出发依次应用即可：
+类型参数 ``a`` 是“解析出一个选项后得到什么值”。习惯做法是让 ``a`` 为 ``Options -> Options``\ ，也就是一个修改配置记录的函数。这样解析结果是一串修改函数，从默认配置出发用 ``foldl`` 依次应用即可，后出现的选项覆盖先出现的：
 
 .. code:: haskell
 
-   foldl (flip id) defaultOptions actions
+   module Main (main) where
 
-``flip id`` 的类型是 ``b -> (b -> c) -> c``\ ，也就是"拿一个值和一个函数，把函数应用到值上"。\ ``foldl`` 从左到右，用累积的配置去调用列表里的每个函数。后出现的选项覆盖先出现的，与用户的直觉一致。
+   import System.Console.GetOpt
+   import System.Environment (getArgs)
+   import System.Exit (exitFailure)
+   import System.IO (hPutStrLn, stderr)
 
-完整示例：一个 wc
---------------------------------------------------------------------------------
+   data Options = Options
+     { optVerbose :: Bool
+     , optOutput :: Maybe FilePath
+     } deriving (Show)
 
-下面实现一个 ``wc`` 的简化版 ``hwc``\ 。它支持 ``-l``\ 、\ ``-w``\ 、\ ``-c`` 三个统计项，可以把结果写到 ``-o`` 指定的文件，没有给出文件名时从标准输入读取。
+   defaultOptions :: Options
+   defaultOptions = Options { optVerbose = False, optOutput = Nothing }
+
+   -- 每个选项解析出来的值是一个修改 Options 的函数
+   options :: [OptDescr (Options -> Options)]
+   options =
+     [ Option ['v'] ["verbose"] (NoArg (\o -> o { optVerbose = True })) "输出详细信息"
+     , Option ['o'] ["output"] (ReqArg (\f o -> o { optOutput = Just f }) "FILE") "把结果写入 FILE"
+     ]
+
+   main :: IO ()
+   main = do
+     args <- getArgs
+     -- Permute 表示选项和普通参数可以任意交错
+     case getOpt Permute options args of
+       (actions, files, []) -> do
+         let opts = foldl (flip id) defaultOptions actions
+         print opts
+         print files
+       (_, _, errs) -> do
+         hPutStrLn stderr (concat errs ++ usageInfo "用法: getopt [选项] [文件...]" options)
+         exitFailure
+
+.. code:: text
+
+   $ runghc GetOpt.hs -v -o out.txt a.txt b.txt
+   Options {optVerbose = True, optOutput = Just "out.txt"}
+   ["a.txt","b.txt"]
+
+   $ runghc GetOpt.hs --bogus
+   unrecognized option `--bogus'
+   用法: getopt [选项] [文件...]
+     -v       --verbose      输出详细信息
+     -o FILE  --output=FILE  把结果写入 FILE
+
+``flip id`` 的类型是 ``b -> (b -> c) -> c``\ ，也就是“拿一个值和一个函数，把函数应用到值上”。\ ``ArgOrder`` 还可以取 ``RequireOrder``\ ，遇到第一个非选项参数后不再识别选项，适合 ``prog [选项] 子命令 [子命令的参数]`` 这种结构。
+
+``getOpt`` 只做选项识别，帮助文本和错误信息由它自动生成。但参数值一律是 ``String``\ ，要转成数字得自己调用 ``readMaybe``\ ；哪个选项必填、哪些互斥，也得自己检查。它适合选项不多、又不想引入依赖的小工具。
+
+第三层：optparse-applicative
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``optparse-applicative`` 是 Haskell 社区最常用的选项解析库，需要写进 ``build-depends``\ ，模块名是 ``Options.Applicative``\ 。它的核心类型是 ``Parser a``\ ，表示“从命令行解析出一个 ``a``\ ”。库提供的基本解析器只有几个：
+
+.. code:: haskell
+
+   switch    :: Mod FlagFields Bool -> Parser Bool           -- 开关，如 -v
+   strOption :: Mod OptionFields String -> Parser String     -- 带字符串参数的选项，如 -o FILE
+   option    :: ReadM a -> Mod OptionFields a -> Parser a    -- 带参数并转换类型，option auto 按 Read 解析
+   argument  :: ReadM a -> Mod ArgumentFields a -> Parser a  -- 位置参数，argument str 取原始字符串
+
+这个库的重点不在这几个函数，而在于\ **它没有发明任何自己的组合方式**\ 。描述一个选项、把多个选项合并成一份配置、在两种写法之间二选一，用的全是本书前面已经介绍过的类型类。
+
+**描述一个选项：Monoid 的 <>**\ 。每个基本解析器接收一个 ``Mod`` 值，说明选项的名字、参数占位、帮助文本、默认值。\ ``Mod`` 是 Monoid 的实例，\ ``long "output"``\ 、\ ``short 'o'``\ 、\ ``metavar "FILE"``\ 、\ ``help "..."``\ 、\ ``value "out.txt"`` 每一个都是一个 ``Mod``\ ，用 Monoid 一章的 ``<>`` 拼起来就是完整的描述。不需要的项直接不写：
+
+.. code:: haskell
+
+   strOption (long "output" <> short 'o' <> metavar "FILE" <> help "把结果写入 FILE")
+
+**合并多个选项：Applicative 的 <$> 和 <*>**\ 。\ ``Parser`` 是 Applicative 的实例。回忆 Applicative 一章的 ``Profile <$> mName <*> mAge <*> mEmail``\ ：用 ``<$>`` 和 ``<*>`` 把构造函数依次应用到几个上下文中的值上。把 ``Maybe`` 换成 ``Parser``\ ，就是把几个选项解析器合并成整份配置的解析器：
+
+.. code:: haskell
+
+   Options <$> switch (long "lines" <> short 'l')
+           <*> switch (long "words" <> short 'w')
+           <*> strOption (long "output" <> short 'o' <> metavar "FILE")
+
+各选项在命令行上出现的顺序无关紧要，\ ``<*>`` 只表示“这几项都要解析，然后把结果交给构造函数”。这里用的是 ``Maybe``\ 、\ ``IO`` 和列表上的同一对运算符，没有任何这个库独有的语法。
+
+**二选一：Alternative 的 <|>**\ 。\ ``Control.Applicative`` 里还有一个 Applicative 的子类 ``Alternative``\ ，本书之前没有用到：
+
+.. code:: haskell
+
+   class Applicative f => Alternative f where
+     empty :: f a
+     (<|>) :: f a -> f a -> f a   -- 先试左边，失败了再试右边
+
+.. code:: text
+
+   ghci> Nothing <|> Just 3
+   Just 3
+   ghci> Just 1 <|> Just 3
+   Just 1
+
+``Parser`` 也是它的实例。\ ``ToFile <$> strOption (...) <|> pure ToStdout`` 表示“给了 ``-o`` 就写文件，否则写标准输出”，其中 ``pure x`` 是“不消耗任何参数、直接给出 ``x``\ ”的解析器，正好用来兜底。\ ``Alternative`` 还附带了 ``optional``\ （零或一次，结果是 ``Maybe``\ ）、\ ``many``\ （零或多次，结果是列表）和 ``some``\ （一或多次），它们是根据 ``<|>`` 和 ``pure`` 定义的通用函数，所以 ``Parser`` 一实现 ``Alternative`` 就自动拥有了。\ ``many (argument str (metavar "FILE..."))`` 就是“任意多个文件名”。
+
+下面用它重写本章的 ``wc`` 简化版 ``hwc``\ 。它支持 ``-l``\ 、\ ``-w``\ 、\ ``-c`` 三个统计项，可以把结果写到 ``-o`` 指定的文件，没有给出文件名时从标准输入读取：
 
 .. code:: haskell
 
@@ -248,53 +355,34 @@
 
    import qualified Data.Text as T
    import qualified Data.Text.IO as TIO
-   import System.Console.GetOpt
-   import System.Environment (getArgs, getProgName)
-   import System.Exit (exitFailure, exitSuccess)
-   import System.IO (hPutStrLn, stderr)
+   import Options.Applicative
+
+   data Output = ToStdout | ToFile FilePath
+     deriving (Show)
 
    data Options = Options
      { optLines :: Bool
      , optWords :: Bool
      , optChars :: Bool
-     , optOutput :: Maybe FilePath
-     , optHelp :: Bool
+     , optOutput :: Output
+     , optFiles :: [FilePath]
      } deriving (Show)
 
-   defaultOptions :: Options
-   defaultOptions = Options
-     { optLines = False
-     , optWords = False
-     , optChars = False
-     , optOutput = Nothing
-     , optHelp = False
-     }
+   -- 描述单个选项：用 <> 把各项修饰拼在一起；二选一：用 <|>
+   outputParser :: Parser Output
+   outputParser =
+     ToFile <$> strOption (long "output" <> short 'o' <> metavar "FILE" <> help "把结果写入 FILE")
+       <|> pure ToStdout
 
-   -- 每个选项被解析后，得到一个修改 Options 的函数
-   options :: [OptDescr (Options -> Options)]
-   options =
-     [ Option ['l'] ["lines"]  (NoArg (\o -> o { optLines = True }))  "统计行数"
-     , Option ['w'] ["words"]  (NoArg (\o -> o { optWords = True }))  "统计单词数"
-     , Option ['c'] ["chars"]  (NoArg (\o -> o { optChars = True }))  "统计字符数"
-     , Option ['o'] ["output"] (ReqArg (\f o -> o { optOutput = Just f }) "FILE")
-                                                                       "把结果写入 FILE"
-     , Option ['h'] ["help"]   (NoArg (\o -> o { optHelp = True }))   "显示帮助"
-     ]
-
-   parseArgs :: [String] -> IO (Options, [FilePath])
-   parseArgs args = do
-     prog <- getProgName
-     let header = "用法: " ++ prog ++ " [选项] [文件...]"
-     case getOpt Permute options args of
-       (actions, files, []) -> do
-         -- 依次把每个修改函数应用到默认值上
-         let opts = foldl (flip id) defaultOptions actions
-         if optHelp opts
-           then putStr (usageInfo header options) >> exitSuccess
-           else return (opts, files)
-       (_, _, errs) -> do
-         hPutStrLn stderr (concat errs ++ usageInfo header options)
-         exitFailure
+   -- 合并多个选项：用 <$> 和 <*> 把它们组成一个 Options
+   optionsParser :: Parser Options
+   optionsParser =
+     Options
+       <$> switch (long "lines" <> short 'l' <> help "统计行数")
+       <*> switch (long "words" <> short 'w' <> help "统计单词数")
+       <*> switch (long "chars" <> short 'c' <> help "统计字符数")
+       <*> outputParser
+       <*> many (argument str (metavar "FILE..."))
 
    count :: Options -> T.Text -> String
    count opts content = unwords (map show selected)
@@ -302,66 +390,74 @@
        -- 没有指定任何统计项时，三项全部输出
        showAll = not (optLines opts || optWords opts || optChars opts)
        selected =
-         [ length (T.lines content) | optLines opts || showAll ]
-           ++ [ length (T.words content) | optWords opts || showAll ]
-           ++ [ T.length content | optChars opts || showAll ]
+         [length (T.lines content) | optLines opts || showAll]
+           ++ [length (T.words content) | optWords opts || showAll]
+           ++ [T.length content | optChars opts || showAll]
 
    main :: IO ()
    main = do
-     (opts, files) <- parseArgs =<< getArgs
-     results <- case files of
+     opts <- execParser (info (helper <*> optionsParser) (progDesc "统计行数、单词数和字符数"))
+     results <- case optFiles opts of
        [] -> do
          content <- TIO.getContents
          return [count opts content]
-       _ -> mapM (\path -> do
-                     content <- TIO.readFile path
-                     return (count opts content ++ "\t" ++ path)) files
+       files -> mapM (\path -> do
+                         content <- TIO.readFile path
+                         return (count opts content ++ "\t" ++ path)) files
      let output = unlines results
      case optOutput opts of
-       Nothing -> putStr output
-       Just path -> writeFile path output
+       ToStdout -> putStr output
+       ToFile path -> writeFile path output
 
-``count`` 里的列表推导式 ``[ x | 条件 ]`` 在条件为假时得到空列表，为真时得到单元素列表，是按条件拼装列表的一种简洁写法。
+``main`` 里的 ``info`` 给解析器加上程序描述，\ ``execParser`` 读取 ``getArgs``\ 、执行解析，出错时打印用法并以退出码 1 结束。\ ``helper`` 的类型是 ``Parser (a -> a)``\ ：看到 ``--help`` 就打印帮助并退出，否则给出 ``id``\ 。连 ``--help`` 的处理也只是又一个用 ``<*>`` 接进来的解析器。\ ``count`` 里的列表推导式 ``[ x | 条件 ]`` 在条件为假时得到空列表，为真时得到单元素列表，是按条件拼装列表的一种简洁写法。
 
-几种用法的实际输出：
+因为有第三方依赖，这个程序要放进 cabal 项目里编译。几种用法的实际输出：
 
-.. code:: sh
+.. code:: text
 
-   $ runghc hwc.hs --help
-   用法: hwc.hs [选项] [文件...]
-     -l       --lines        统计行数
-     -w       --words        统计单词数
-     -c       --chars        统计字符数
-     -o FILE  --output=FILE  把结果写入 FILE
-     -h       --help         显示帮助
+   $ hwc --help
+   Usage: hwc [-l|--lines] [-w|--words] [-c|--chars] [-o|--output FILE] [FILE...]
 
-   $ runghc hwc.hs notes.txt hwc.hs
-   3 8 39	notes.txt
-   76 372 2473	hwc.hs
+     统计行数、单词数和字符数
 
-   $ runghc hwc.hs -lw notes.txt
+   Available options:
+     -h,--help                Show this help text
+     -l,--lines               统计行数
+     -w,--words               统计单词数
+     -c,--chars               统计字符数
+     -o,--output FILE         把结果写入 FILE
+
+   $ hwc notes.txt app/Main.hs
+   3 8 16	notes.txt
+   57 258 1755	app/Main.hs
+
+   $ hwc -lw notes.txt
    3 8	notes.txt
 
-   $ echo hello world | runghc hwc.hs -w
+   $ echo hello world | hwc -w
    2
 
-   $ runghc hwc.hs --bogus x
-   unrecognized option `--bogus'
-   用法: hwc.hs [选项] [文件...]
-     -l       --lines        统计行数
-     ...
+   $ hwc --bogus x
+   Invalid option `--bogus'
+
+   Usage: hwc [-l|--lines] [-w|--words] [-c|--chars] [-o|--output FILE] [FILE...]
+   ...
    $ echo $?
    1
 
-   $ runghc hwc.hs -o
-   option `-o' requires an argument FILE
+   $ hwc -o
+   The option `-o` expects an argument.
    ...
 
-帮助文本的对齐、未知选项和缺少参数的错误信息，都是 ``getOpt`` 和 ``usageInfo`` 自动生成的。
+用法行、选项对齐、错误信息都是根据同一个 ``Parser Options`` 生成的。因为它是一个普通的值，还可以拆成几段在多个子命令之间复用，或者用 ``execParserPure`` 在测试里喂一个参数列表而不经过真正的命令行。子命令由 ``subparser`` 和 ``command`` 提供，本书不展开。
 
 .. tip::
 
-   **如果你熟悉其他语言**\ ：\ ``getOpt`` 的定位相当于 Python 的 ``getopt`` 模块或 C 的 ``getopt_long``\ ，只做选项识别，不做类型转换和校验。Python 的 ``argparse``\ 、Go 的 ``cobra`` 那种带子命令、自动类型转换的功能，在 Haskell 里由 ``optparse-applicative`` 提供。它把每个选项写成一个 ``Parser a``\ ，再用 Applicative 一章介绍的 ``<$>`` 和 ``<*>`` 组合成整个配置的解析器。程序规模变大以后可以考虑迁移，本书不展开。
+   **如果你熟悉其他语言**\ ：Python 的 ``argparse`` 靠反复调用 ``parser.add_argument`` 往一个可变对象里登记选项，Go 的 ``flag`` 包把选项绑定到指针上，Rust 的 ``clap`` 用派生宏读取结构体上的属性标注。每个库都要自己定义“怎么把多个选项组合成一份配置”，使用者也得为每个库单独学一套组合方式。
+
+   ``optparse-applicative`` 只定义了“一个选项是什么”（\ ``Parser a``\ ）和“一条修饰是什么”（\ ``Mod``\ ），然后为它们实现 ``Monoid``\ 、\ ``Applicative`` 和 ``Alternative`` 实例。“怎么组合”不是这个库的事：拼修饰用 ``<>``\ ，合并选项用 ``<$>`` 和 ``<*>``\ ，二选一用 ``<|>``\ ，重复和可选用 ``many`` 和 ``optional``\ 。这些运算符和函数来自标准库，读者在 ``Maybe``\ 、列表和 ``IO`` 上已经用过，换到命令行解析上含义不变。
+
+   这是 Haskell 做抽象的典型方式。“合并”“二选一”这类通用形状定义在类型类里，只定义一次；新的库通过写实例接入，使用者带着已有的知识直接上手。相比之下，其他语言的库通常各自发明一套组合 API，学过 ``argparse`` 对学 ``cobra`` 并没有多少帮助。
 
 小结
 --------------------------------------------------------------------------------
@@ -370,4 +466,4 @@
 - **退出码**\ ：\ ``exitFailure`` 和 ``exitWith (ExitFailure n)`` 报告失败，错误信息写到 ``stderr``\ 。
 - **标准输入**\ ：纯文本过滤用 ``interact``\ ，需要逐行 IO 时用 ``isEOF`` 加 ``getLine`` 循环。
 - **外部命令**\ ：\ ``callProcess`` 只看成败，\ ``readProcess`` 取输出，\ ``readProcessWithExitCode`` 三项都要。
-- **getOpt**\ ：用 ``OptDescr`` 列表描述选项，值类型取 ``Options -> Options``\ ，解析后用 ``foldl (flip id) defaultOptions`` 合并，\ ``usageInfo`` 生成帮助。
+- **解析选项的三个层次**\ ：参数固定时直接模式匹配；选项不多又不想加依赖时用 ``getOpt``\ ，值类型取 ``Options -> Options`` 再 ``foldl`` 合并；正式的工具用 ``optparse-applicative``\ ，修饰用 ``<>`` 拼，选项用 ``<$>`` 和 ``<*>`` 合并，二选一用 ``<|>``\ 。它没有自己的组合语法，靠的全是标准类型类的实例。
