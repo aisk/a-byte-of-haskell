@@ -114,19 +114,21 @@ Prelude 提供了最常用的终端交互函数：
    getLine  :: IO String              -- 从标准输入读取一行
    print    :: Show a => a -> IO ()   -- 打印实现了 Show 的值（等价于 putStrLn . show）
 
-完整示例：
+读进来的总是 ``String``\ ，转成数字用 ``Text.Read`` 的 ``readMaybe``\ ，失败时得到 ``Nothing`` 而不是崩溃：
 
 .. code:: haskell
+
+   import Text.Read (readMaybe)
 
    main :: IO ()
    main = do
      putStr "请输入您的年龄: "
      ageStr <- getLine
-     case reads ageStr of
-       [(age, "")] ->
-         putStrLn $ "明年您将 " ++ show (age + 1 :: Int) ++ " 岁。"
-       _ ->
-         putStrLn "输入格式有误，请输入纯数字。"
+     case readMaybe ageStr of
+       Just age -> putStrLn ("明年您将 " ++ show (age + 1 :: Int) ++ " 岁。")
+       Nothing -> putStrLn "输入格式有误，请输入纯数字。"
+
+这四个函数在 ``Data.Text.IO`` 里都有同名的 ``Text`` 版本，正式程序通常用后者。写法完全一样，只是 ``import qualified Data.Text.IO as TIO`` 之后加前缀。
 
 文件句柄与资源安全
 --------------------------------------------------------------------------------
@@ -134,20 +136,24 @@ Prelude 提供了最常用的终端交互函数：
 基于 Handle 的操作
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-涉及文件、套接字等系统资源时，使用基于句柄（Handle）的操作。\ ``System.IO`` 提供了生命周期管理：
+涉及文件、套接字等系统资源时，使用基于句柄（Handle）的操作。\ ``System.IO`` 的 ``withFile`` 负责句柄的生命周期，行为类似 Python 的 ``with open(...) as f:`` 或 Java 的 try-with-resources：无论作用域内的操作正常结束还是抛出异常，文件句柄都会被关闭。句柄上的读写函数都以 ``h`` 开头，\ ``hGetLine``\ 、\ ``hPutStrLn``\ 、\ ``hIsEOF``\ ，用法与不带 ``h`` 的控制台版本一致：
 
 .. code:: haskell
 
    import System.IO
 
-   safeReadDemo :: FilePath -> IO ()
-   safeReadDemo path =
-     withFile path ReadMode $ \handle -> do
-       contents <- hGetContents handle
-       putStrLn "=== 文件内容 ==="
-       putStr contents
+   -- 打印文件的前 n 行，只把需要的行读进内存
+   printHead :: Int -> FilePath -> IO ()
+   printHead n path =
+     withFile path ReadMode $ \h -> do
+       let loop i = do
+             eof <- hIsEOF h
+             if eof || i >= n
+               then return ()
+               else hGetLine h >>= putStrLn >> loop (i + 1)
+       loop 0
 
-``withFile`` 的行为类似 Python 的 ``with open(...) as f:`` 或 Java 的 try-with-resources：无论作用域内的操作正常结束还是抛出异常，文件句柄都会被关闭。
+注意这里没有用 ``hGetContents`` 一次取出全部内容。它和下面要说的 ``readFile`` 一样是惰性的，如果在 ``withFile`` 返回后才去消费结果，句柄已经关闭，得到的是空内容或异常。逐行读写、编码设置和标准输出的缓冲问题，读写文件一章有更完整的例子。
 
 惰性 I/O 的问题
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -213,10 +219,7 @@ Prelude 提供了 ``readFile :: FilePath -> IO String``\ 。它用起来方便�
 运行时异常：Control.Exception
 --------------------------------------------------------------------------------
 
-纯代码与 IO 中的错误分工很清楚：
-
-- **可预期的业务失败**\ ：用 ``Maybe``\ 、\ ``Either`` 或 ``ExceptT``\ ，把错误写在类型签名里；
-- **外部环境的故障**\ ：如磁盘错误、网络中断、权限不足，用 ``Control.Exception`` 捕获与恢复。
+异常对应错误处理一章“怎么选”那张表的倒数第二行：磁盘错误、网络中断、权限不足这类外部环境的故障，调用方无法预先排除，也不适合写进每个函数的返回类型，于是交给 ``Control.Exception`` 在合适的层次捕获与恢复。可预期的业务失败仍然用 ``Maybe`` 和 ``Either`` 写在签名里，那一章已经讨论过分工，这里只看异常这一侧的用法。
 
 使用 try 与 catch
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -246,4 +249,4 @@ Prelude 提供了 ``readFile :: FilePath -> IO String``\ 。它用起来方便�
 - ``IO a`` 也可以看作装着执行结果的容器，类似 JavaScript 的 ``Promise``\ ；\ ``do`` 记号对应 ``async/await``\ 。
 - Prelude 的 ``readFile`` 是惰性 I/O，句柄关闭时机不可控，一般改用 ``Data.Text.IO`` 或 ``Data.ByteString`` 的严格读取。
 - 需要释放的资源用 ``bracket`` 或 ``withFile`` 管理。
-- 业务错误用 ``Either``\ ，外部环境异常用 ``Control.Exception`` 的 ``try`` / ``catch``\ 。
+- 业务错误用 ``Either``\ ，外部环境异常用 ``Control.Exception`` 的 ``try`` / ``catch``\ ，完整的选择标准见错误处理一章。

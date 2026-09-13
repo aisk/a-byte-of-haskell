@@ -181,7 +181,7 @@
        hs-source-dirs:   app
        main-is:          Main.hs
        -- 开启多线程运行时
-       ghc-options:      -threaded -rtsopts -with-rtsopts="-N"
+       ghc-options:      -threaded -rtsopts -with-rtsopts=-N
        build-depends:    my-awesome-app
 
    -- 3. 测试套件
@@ -192,44 +192,187 @@
        main-is:          Spec.hs
        build-depends:    my-awesome-app
 
-常用命令
+日常工作流
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-- **下载依赖并编译**\ ：
+环境一章介绍过用 ``runghc`` 和 ``ghc`` 直接处理单个文件。进了项目就不再手动调用 ``ghc``\ ，一切经过 ``cabal``\ 。一天的典型流程是这样：
 
-  .. code:: sh
+.. code:: sh
 
-     $ cabal build
+   $ cabal update                    # 刷新 Hackage 包索引，第一次必须运行，之后每隔几天一次
+   $ cabal init --interactive        # 新项目：按提示生成 .cabal 文件和目录骨架
+   $ cabal build                     # 下载依赖并编译；第一次慢，之后只重编改过的模块
+   $ cabal run my-awesome-app -- --port 8080   # 运行可执行程序，-- 之后的参数传给程序
+   $ cabal repl my-awesome-app       # 带全部依赖的 GHCi，改完代码用 :r 重新加载
+   $ cabal test                      # 运行 test-suite
 
-- **运行可执行程序**\ ：
+要用一个新的库，做法是把它加进 ``build-depends`` 然后 ``cabal build``\ ，不是 ``cabal install``\ 。\ ``cabal install`` 是给可执行工具用的，例如 ``cabal install hlint``\ 。带 ``--lib`` 的写法会把库装进全局环境，容易造成版本冲突，只适合给 ``runghc`` 跑单文件脚本时临时用。依赖解析失败时先看 ``cabal update`` 是不是很久没跑，过旧的索引会让 cabal 找不到新版本。
 
-  .. code:: sh
+把前几章拼起来：一个应用的骨架
+--------------------------------------------------------------------------------
 
-     $ cabal run my-awesome-app
+第五部分讲了 ReaderT 模式、错误分工、资源管理和并发，第六部分的示例却都是裸 ``IO`` 加显式参数的小程序。两种写法都对，区别只在规模。几百行以内的脚本和命令行工具，直接用 ``IO`` 和一个 ``Config`` 记录当参数就够了；一旦有多个模块要共享配置、日志句柄和可变状态，就值得搭下面这个骨架。它从前面几章各取一块，拼成一个可以编译运行的最小应用：
 
-- **运行测试**\ ：
+.. mermaid::
 
-  .. code:: sh
+   graph TD
+     CABAL["myapp.cabal<br/>library / executable / test-suite<br/>本章"] --> MAIN
+     CFG["MyApp.Config<br/>optparse-applicative 解析出 Config<br/>命令行一章"] --> MAIN["app/Main.hs<br/>解析参数，bracket 打开资源，<br/>最外层 catch 兜底，runApp<br/>IO 一章"]
+     TYPES["MyApp.Types<br/>Env 与 App = ReaderT Env IO<br/>单子变换子一章"] --> LOGIC
+     TYPES --> MAIN
+     LOGIC["MyApp.Logic<br/>纯校验返回 Either，效果部分在 App 里<br/>错误处理一章"] --> MAIN
+     LOGIC --> TEST["test/Spec.hs<br/>只导入 library，直接测纯函数"]
+     MAIN -. "IORef 放进 Env<br/>并发一章" .-> TYPES
 
-     $ cabal test --test-show-details=always
+目录和 ``.cabal`` 与前面的模板一致，库暴露三个模块，依赖多了 ``mtl`` 和 ``optparse-applicative``\ ：
 
-- **启动带项目依赖的 REPL**\ ：
+.. code:: text
 
-  .. code:: sh
+   library
+       exposed-modules:  MyApp.Config
+                         MyApp.Types
+                         MyApp.Logic
+       build-depends:    base, mtl, optparse-applicative
 
-     $ cabal repl my-awesome-app
+``MyApp.Config`` 只负责从命令行得到一份不可变的配置：
 
-- **清理构建产物**\ ：
+.. code:: haskell
 
-  .. code:: sh
+   module MyApp.Config (Config (..), parseConfig) where
 
-     $ cabal clean
+   import Options.Applicative
+
+   data Config = Config
+     { cfgLogFile :: FilePath
+     , cfgLimit :: Int
+     } deriving (Show)
+
+   parseConfig :: IO Config
+   parseConfig = execParser (info (helper <*> parser) (progDesc "示例应用"))
+     where
+       parser = Config
+         <$> strOption (long "log" <> metavar "FILE" <> value "app.log" <> help "日志文件")
+         <*> option auto (long "limit" <> metavar "N" <> value 100 <> help "单次上限")
+
+``MyApp.Types`` 定义环境和应用单子。配置、日志句柄、可变状态都放在 ``Env`` 里，业务代码用 ``asks`` 取：
+
+.. code:: haskell
+
+   module MyApp.Types (Env (..), App, runApp) where
+
+   import Control.Monad.Reader (ReaderT, runReaderT)
+   import Data.IORef (IORef)
+   import MyApp.Config (Config)
+   import System.IO (Handle)
+
+   data Env = Env
+     { envConfig :: Config
+     , envLog :: Handle        -- 由 main 用 bracket 打开和关闭
+     , envTotal :: IORef Int   -- 可变状态放进 Env，见并发一章
+     }
+
+   type App = ReaderT Env IO
+
+   runApp :: Env -> App a -> IO a
+   runApp env app = runReaderT app env
+
+``MyApp.Logic`` 是业务。规则本身是纯函数，失败用 ``Either`` 说明原因；带效果的部分写在 ``App`` 里，用 ``liftIO`` 做 IO：
+
+.. code:: haskell
+
+   module MyApp.Logic (validate, process) where
+
+   import Control.Monad.Reader (asks, liftIO)
+   import Data.IORef (atomicModifyIORef')
+   import MyApp.Config (Config (..))
+   import MyApp.Types (App, Env (..))
+   import System.IO (hPutStrLn)
+
+   -- 业务规则是纯函数，失败用 Either 表达，可以直接测试
+   validate :: Int -> Int -> Either String Int
+   validate limit n
+     | n < 0 = Left "数量不能为负"
+     | n > limit = Left ("超过上限 " ++ show limit)
+     | otherwise = Right n
+
+   process :: Int -> App ()
+   process n = do
+     limit <- asks (cfgLimit . envConfig)
+     logH <- asks envLog
+     case validate limit n of
+       Left err -> liftIO (hPutStrLn logH ("拒绝 " ++ show n ++ ": " ++ err))
+       Right ok -> do
+         total <- asks envTotal
+         new <- liftIO (atomicModifyIORef' total (\t -> (t + ok, t + ok)))
+         liftIO (hPutStrLn logH ("接受 " ++ show ok ++ "，累计 " ++ show new))
+
+``app/Main.hs`` 是唯一知道所有东西怎么拼起来的地方：
+
+.. code:: haskell
+
+   module Main (main) where
+
+   import Control.Exception (SomeException, bracket, catch)
+   import Data.IORef (newIORef, readIORef)
+   import MyApp.Config (Config (..), parseConfig)
+   import MyApp.Logic (process)
+   import MyApp.Types (Env (..), runApp)
+   import System.Exit (exitFailure)
+   import System.IO
+
+   main :: IO ()
+   main = do
+     cfg <- parseConfig            -- 第 26 章：--help 与参数错误在这一步就已处理完
+     run cfg `catch` \e -> do
+       -- 最外层兜底：没人处理的异常在这里变成一条错误信息和非零退出码
+       hPutStrLn stderr ("致命错误: " ++ show (e :: SomeException))
+       exitFailure
+
+   run :: Config -> IO ()
+   run cfg = do
+     total <- newIORef 0
+     -- 第 22 章：资源用 bracket 打开和释放
+     bracket (openFile (cfgLogFile cfg) AppendMode) hClose $ \logH -> do
+       let env = Env { envConfig = cfg, envLog = logH, envTotal = total }
+       runApp env (mapM_ process [30, -1, 500, 70])   -- 第 20 章
+     readIORef total >>= \t -> putStrLn ("总计: " ++ show t)
+
+测试直接导入库，不经过 ``main``\ ，也不需要 ``Env``\ ：
+
+.. code:: haskell
+
+   module Main (main) where
+
+   import MyApp.Logic (validate)
+   import System.Exit (exitFailure)
+
+   main :: IO ()
+   main
+     | validate 100 (-1) == Left "数量不能为负" && validate 100 42 == Right 42 = putStrLn "ok"
+     | otherwise = exitFailure
+
+.. code:: text
+
+   $ cabal run myapp -- --limit 100
+   总计: 100
+   $ cat app.log
+   接受 30，累计 30
+   拒绝 -1: 数量不能为负
+   拒绝 500: 超过上限 100
+   接受 70，累计 100
+   $ cabal run myapp -- --log /nonexistent/dir/x.log
+   致命错误: /nonexistent/dir/x.log: openFile: does not exist (No such file or directory)
+   $ cabal test
+   Test suite myapp-test: PASS
+
+几个设计决定值得点明。错误分成两层：业务规则不满足是预期内的，\ ``validate`` 用 ``Either`` 返回，\ ``process`` 记一条日志后继续处理下一个；日志文件打不开是环境故障，\ ``openFile`` 抛出异常，一路向上到 ``main`` 的 ``catch`` 变成一条错误信息和退出码 1。\ ``parseConfig`` 放在 ``catch`` 之外，因为 ``--help`` 是通过抛出 ``ExitCode`` 退出的，放在里面会被 ``SomeException`` 一并捕获，命令行一章的 note 提过这一点。可变状态是一个 ``IORef``\ ，用 ``atomicModifyIORef'`` 更新，将来改成多线程处理也不用动 ``Logic``\ ；需要条件等待时换成 ``TVar`` 即可。\ ``App`` 用 ``type`` 而不是 ``newtype``\ ，少一层包装；等到需要隐藏 ``ReaderT`` 或者写 MTL 风格的约束时，再升级成单子变换子一章的 ``newtype`` 写法。
 
 小结
 --------------------------------------------------------------------------------
 
 - **导出列表与信息隐藏**\ ：隐藏构造器并提供智能构造函数，可以保证值在创建时就满足约束。
 - **导入方式**\ ：优先使用显式列表导入或 ``qualified as`` 限定导入。
-- **Cabal**\ ：用 ``common`` 块复用配置，用 ``library`` 与 ``executable`` 分离库和入口，按需开启 ``-threaded``\ 。
+- **Cabal**\ ：用 ``common`` 块复用配置，用 ``library`` 与 ``executable`` 分离库和入口，按需开启 ``-threaded``\ 。加依赖是改 ``build-depends``\ ，不是 ``cabal install``\ 。
+- **应用骨架**\ ：小程序用裸 ``IO`` 加 ``Config`` 参数；多模块共享配置和状态时，用 ``ReaderT Env IO``\ ，配置来自命令行解析，资源由 ``bracket`` 管理，业务错误走 ``Either``\ ，环境故障走异常并在 ``main`` 兜底。
 
 下一部分转向实际编程中经常用到的类库，从读写文件开始，到命令行参数、JSON、HTTP 请求和 Socket，每章都以一个可以直接运行的程序结束。

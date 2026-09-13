@@ -12,6 +12,7 @@
                    , bytestring >= 0.11
                    , directory >= 1.3
                    , filepath >= 1.4
+                   , time >= 1.9
 
 IO 一章已经介绍过 ``withFile``\ 、\ ``bracket`` 和惰性 I/O 的问题，字符串一章介绍过 ``Text`` 和 ``ByteString`` 的区别。本章在这两章的基础上，直接给出可以照着写的代码。
 
@@ -204,66 +205,73 @@ Prelude 的 ``readFile`` 返回惰性的 ``String``\ ，文件句柄要等字符
 System.Directory
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``directory`` 包的 ``System.Directory`` 模块封装了操作系统的文件系统调用。常用的函数：
+``directory`` 包的 ``System.Directory`` 模块封装了操作系统的文件系统调用。按要解决的问题分组：
 
 .. list-table::
    :header-rows: 1
-   :widths: 45 55
+   :widths: 16 44 40
 
-   * - 函数
-     - 作用
-   * - ``doesFileExist :: FilePath -> IO Bool``
-     - 文件是否存在
-   * - ``doesDirectoryExist :: FilePath -> IO Bool``
-     - 目录是否存在
-   * - ``listDirectory :: FilePath -> IO [FilePath]``
-     - 列出目录下的条目名，不含 ``.`` 和 ``..``\ ，也不含路径前缀
-   * - ``createDirectoryIfMissing :: Bool -> FilePath -> IO ()``
-     - 创建目录，第一个参数为 ``True`` 时连同父目录一起创建
-   * - ``removeFile``\ 、\ ``renameFile``\ 、\ ``copyFile``
-     - 删除、重命名、复制文件
-   * - ``removeDirectoryRecursive``
-     - 递归删除目录
-   * - ``getCurrentDirectory``\ 、\ ``getHomeDirectory``
-     - 当前工作目录、用户主目录
-   * - ``getFileSize :: FilePath -> IO Integer``
-     - 文件大小（字节）
-   * - ``getModificationTime :: FilePath -> IO UTCTime``
-     - 最后修改时间
+   * - 问题
+     - 函数
+     - 说明
+   * - 存在性
+     - ``doesFileExist``\ 、\ ``doesDirectoryExist`` ``:: FilePath -> IO Bool``
+     - 想先判断再操作时用。检查和使用之间文件可能变化，更可靠的做法见下文异常处理
+   * - 列出内容
+     - ``listDirectory :: FilePath -> IO [FilePath]``
+     - 只返回条目名，不含 ``.`` 和 ``..``\ ，也不含路径前缀，要自己用 ``</>`` 拼上父目录
+   * - 创建、删除、移动
+     - ``createDirectoryIfMissing :: Bool -> FilePath -> IO ()``\ ；\ ``removeFile``\ 、\ ``renameFile``\ 、\ ``copyFile``\ ；\ ``removeDirectoryRecursive``
+     - 第一个参数为 ``True`` 时连同父目录一起创建。\ ``renameFile`` 要求源和目标在同一个文件系统上，跨盘移动改用 ``copyFile`` 加 ``removeFile``
+   * - 元数据
+     - ``getFileSize :: FilePath -> IO Integer``\ 、\ ``getModificationTime :: FilePath -> IO UTCTime``
+     - 大小按字节；时间类型来自随 GHC 发布的 ``time`` 包
+   * - 固定位置
+     - ``getCurrentDirectory``\ 、\ ``getHomeDirectory``\ 、\ ``getXdgDirectory``
+     - 工作目录、用户主目录、按 XDG 规范的配置或数据目录
 
-一个把这些函数串起来的例子：
+读的一侧由章末的目录遍历示例演示。写的一侧看一个常见的小任务：把当前目录下的 ``.log`` 文件归档到用户主目录里按月份分的子目录中，文件名加上日期，免得下个月的同名文件覆盖它：
 
 .. code:: haskell
 
    module Main (main) where
 
+   import Data.Time (defaultTimeLocale, formatTime, getCurrentTime)
    import System.Directory
    import System.FilePath
 
-   main :: IO ()
-   main = do
+   -- 把当前目录下的 *.log 归档到 ~/.myapp/logs/YYYY-MM/，文件名加上日期
+   archiveLogs :: IO ()
+   archiveLogs = do
      home <- getHomeDirectory
-     let workDir = home </> ".myapp" </> "cache"
-     createDirectoryIfMissing True workDir
-     writeFile (workDir </> "hello.txt") "hello\n"
-     copyFile (workDir </> "hello.txt") (workDir </> "hello" <.> "bak")
-     entries <- listDirectory workDir
-     print entries
-     size <- getFileSize (workDir </> "hello.txt")
-     mtime <- getModificationTime (workDir </> "hello.txt")
-     putStrLn (show size ++ " 字节，修改于 " ++ show mtime)
-     removeFile (workDir </> "hello.bak")
-     removeDirectoryRecursive (home </> ".myapp")
+     now <- getCurrentTime
+     let month = formatTime defaultTimeLocale "%Y-%m" now
+         day = formatTime defaultTimeLocale "%Y%m%d" now
+         target = home </> ".myapp" </> "logs" </> month
+     createDirectoryIfMissing True target
+     names <- listDirectory "."
+     let logs = filter ((== ".log") . takeExtension) names
+     mapM_ (\name -> renameFile name (target </> takeBaseName name <.> day <.> "log")) logs
+     putStrLn ("归档 " ++ show (length logs) ++ " 个文件到 " ++ target)
+
+   main :: IO ()
+   main = archiveLogs
 
 .. code:: text
 
-   ["hello.txt","hello.bak"]
-   6 字节，修改于 2026-09-13 08:06:24.461704378 UTC
+   $ ls
+   app.log  error.log  notes.txt
+   $ runghc Archive.hs
+   归档 2 个文件到 /home/user/.myapp/logs/2026-09
+   $ ls ~/.myapp/logs/2026-09
+   app.20260913.log  error.20260913.log
+
+``takeBaseName`` 去掉目录和扩展名，两个 ``<.>`` 再把日期和扩展名接回去。日期格式化用的 ``Data.Time`` 来自 ``time`` 包，所以它也出现在本章开头的 ``build-depends`` 里。
 
 System.FilePath
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-上面的例子用 ``</>`` 拼接路径，而不是 ``++ "/" ++``\ 。\ ``FilePath`` 只是 ``String`` 的别名，直接拼接当然可行，但 ``filepath`` 包的 ``System.FilePath`` 模块处理了几件容易出错的事：
+上面的例子用 ``</>`` 和 ``<.>`` 拼接路径，而不是 ``++ "/" ++``\ 。\ ``FilePath`` 只是 ``String`` 的别名，直接拼接当然可行，但 ``filepath`` 包的 ``System.FilePath`` 模块处理了几件容易出错的事：
 
 - 分隔符按平台选择，Windows 上是 ``\``\ ，其他系统是 ``/``\ ；
 - ``"dir/" </> "file"`` 和 ``"dir" </> "file"`` 得到同样的结果，不会出现双斜杠；

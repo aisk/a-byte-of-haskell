@@ -173,6 +173,67 @@ GHC 运行时内置了一个 **I/O Manager**\ ，基于操作系统的多路复�
 - 若 500ms 计时先完成，返回 ``Left ()``\ （代表超时）；
 - 若网络请求先完成，返回 ``Right "用户档案数据"``\ ，计时器被取消。
 
+共享状态的三个层次
+--------------------------------------------------------------------------------
+
+前面的例子里线程之间不共享任何数据，\ ``concurrently`` 把结果收回来就完事了。一旦几个线程要读写同一个计数器、同一个句柄、同一个队列，就要选一种装共享状态的容器。\ ``base`` 和 ``stm`` 提供了三层，从简单到强大：
+
+.. list-table::
+   :header-rows: 1
+   :widths: 16 40 44
+
+   * - 容器
+     - 适合的场景
+     - 核心操作
+   * - ``IORef``
+     - 单个变量：计数器、缓存、开关。只做原子更新，不需要等待别的线程
+     - ``newIORef``\ 、\ ``readIORef``\ 、\ ``atomicModifyIORef'``
+   * - ``MVar``
+     - 一把锁或一个单槽信箱：保护一个句柄、两个线程之间交接一个值、等待完成信号
+     - ``newMVar``\ 、\ ``takeMVar``\ 、\ ``putMVar``\ 、\ ``withMVar``
+   * - ``TVar`` 与 STM
+     - 多个变量必须一起改，或者需要按条件等待：余额够了再扣款，队列非空再取
+     - ``newTVar``\ 、\ ``readTVar``\ 、\ ``writeTVar``\ 、\ ``atomically``\ 、\ ``retry``
+
+**IORef** 是最轻的一层，就是一个可变的引用单元。多线程同时修改时不能先 ``readIORef`` 再 ``writeIORef``\ ，两步之间可能被别的线程插进来。要用 ``atomicModifyIORef'``\ ，它把“读、算、写”作为一个原子操作完成；末尾的撇号表示对新值严格求值，避免累积 Thunk：
+
+.. code:: haskell
+
+   module Main (main) where
+
+   import Control.Concurrent
+   import Control.Monad (forM_, replicateM_)
+   import Data.IORef
+
+   main :: IO ()
+   main = do
+     counter <- newIORef (0 :: Int)
+     done <- newEmptyMVar
+     forM_ [1 .. 10 :: Int] $ \_ -> forkIO $ do
+       replicateM_ 1000 (atomicModifyIORef' counter (\n -> (n + 1, ())))
+       putMVar done ()                 -- 完成后往信箱里放一个信号
+     replicateM_ 10 (takeMVar done)    -- 主线程收满 10 个信号再继续
+     readIORef counter >>= print       -- 10000
+
+**MVar** 是一个要么空要么满的格子。\ ``takeMVar`` 在格子空时阻塞，取走后格子变空；\ ``putMVar`` 在格子满时阻塞。上面的 ``done`` 就是把它当信箱用：子线程放，主线程取，取不到就等。另一种常见用法是当锁。\ ``newMVar ()`` 创建一个装着 ``()`` 的格子，\ ``withMVar`` 取出、执行、放回，同一时刻只有一个线程能进入临界区：
+
+.. code:: haskell
+
+   lock <- newMVar ()
+   forM_ ["甲", "乙", "丙"] $ \name -> forkIO $
+     forM_ [1 .. 3 :: Int] $ \i ->
+       withMVar lock $ \_ -> putStrLn (name ++ " 第 " ++ show i ++ " 行")
+
+没有锁时三个线程的输出会交错，有了锁每一行都是完整的。\ ``withMVar`` 内部用了 IO 一章的 ``bracket``\ ，临界区抛出异常时锁也会被放回。
+
+**TVar 与 STM** 是第三层，下一节展开。它解决的是 ``MVar`` 做不好的两件事：同时修改多个变量而不暴露中间状态，以及“条件不满足就等，满足了自动醒来”。
+
+怎么选：单个变量、只做原子更新，用 ``IORef``\ ；需要互斥或者两个线程交接，用 ``MVar``\ ；拿不准就用 ``TVar``\ ，它的能力覆盖前两者，代价只是每次访问多一点开销。线程本身的管理也有一条默认规则：上面两个例子用 ``forkIO`` 加 ``MVar`` 计数是为了展示原语，实际代码里除了“发出去就不管”的守护线程，一律优先用 ``async`` 的 ``concurrently``\ 、\ ``race`` 和 ``mapConcurrently``\ ，它们会自动等待子线程、传播异常、取消兄弟线程。
+
+.. tip::
+
+   **如果你熟悉其他语言**\ ：\ ``IORef`` 加 ``atomicModifyIORef'`` 相当于 Java 的 ``AtomicReference`` 或 Go 的 ``atomic`` 包；\ ``MVar`` 当锁用时相当于 ``Mutex``\ ，当信箱用时相当于 Go 里容量为 1 的 channel 或 Java 的 ``SynchronousQueue``\ ；\ ``TVar`` 在主流语言里没有直接对应物，最接近的是数据库事务。
+
 软件事务内存（STM）
 --------------------------------------------------------------------------------
 
@@ -262,4 +323,5 @@ STM 的另一个组合子是 ``orElse``\ ：
 - I/O Manager 基于 epoll / kqueue 实现非阻塞调度，代码保持同步风格。
 - 涉及文件 I/O 或 FFI 等阻塞调用时，需要开启 ``-threaded``\ ，让多个操作系统线程参与调度。
 - 并发任务用 ``Control.Concurrent.Async`` 的 ``concurrently`` 和 ``race``\ ，避免手动管理线程。
+- 共享状态分三层：单个变量用 ``IORef`` 加 ``atomicModifyIORef'``\ ，锁和信箱用 ``MVar``\ ，多变量和条件等待用 ``TVar``\ ；拿不准就用 ``TVar``\ 。
 - STM 用事务代替锁来处理共享状态，没有死锁，事务可以用 ``retry`` 与 ``orElse`` 组合。
