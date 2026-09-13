@@ -40,6 +40,7 @@ release = ''
 # ones.
 extensions = [
     'sphinx.ext.githubpages',
+    'sphinxcontrib.jquery',
     'sphinxcontrib.mermaid',
 ]
 
