@@ -46,15 +46,19 @@ ADT 之所以被称为“代数”，是因为任何复杂数据类型的可能�
 
 .. tip::
 
-   **他山之石：多语言心智模型对照**\ ：
+   **如果你熟悉其他语言**\ ：
 
    - **和类型（Sum Types）**\ ：
+
      - **Rust / Swift**\ ：等价于可携带载荷数据的强类型 ``enum``\ （如 Rust 的 ``enum WebEvent { PageLoad, KeyPress(char) }``\ ）。
      - **TypeScript**\ ：等价于\ **可辨识联合类型（Discriminated Unions）**\ （例如 ``type Shape = { kind: 'circle'; r: number } | { kind: 'rect'; w: number; h: number }``\ ）。
+
    - **积类型（Product Types）**\ ：
+
      - **C / Go / Rust**\ ：等价于最基础的结构体 ``struct``\ 。
      - **Python**\ ：等价于 ``@dataclass`` 或 ``NamedTuple``\ 。
      - **Java**\ ：等价于现代 Java 的 ``record``\ 。
+
    - **核心优势**\ ：传统命令式语言经常需要通过继承、向下转型或随意魔数来模拟和类型，而在 Haskell 中，编译器能在编译期完整分析所有分支可能，确保没有无效状态产生。
 
 递归数据结构：从零建模二叉搜索树（BST）

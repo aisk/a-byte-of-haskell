@@ -91,13 +91,15 @@ Traversable 的形式化定义
 
 .. tip::
 
-   **他山之石：多语言心智模型对照**\ ：
+   **如果你熟悉其他语言**\ ：
 
    - **直觉通俗化**\ ：``InsideOut``\ （结构与效果的内外翻转）。
    - **跨语言映射**\ ：
+
      - **JavaScript / TypeScript**\ ：假设你有一个用户 ID 列表 ``users = [1, 2, 3]``\ ，对每个 ID 调用异步查询 ``fetchUser(id)``\ 。若直接映射 ``users.map(fetchUser)``\ ，会得到由 Promise 组成的数组：\ ``[Promise<User>]``\ 。为了将其翻转为“等待全部完成后的单个 Promise”：\ ``Promise<User[]>``\ ，必须书写 ``Promise.all(users.map(fetchUser))``\ 。而在 Haskell 中，这一高频工程操作被一行极其优雅的代码彻底概括：\ ``traverse fetchUser users``\ ！
      - **Java**\ ：将 ``List<CompletableFuture<User>>`` 汇聚为单一的 ``CompletableFuture<List<User>>``\ 。
      - **Rust**\ ：将产生 ``Result<T, E>`` 的迭代器翻转收集为一个包含全部元素的 ``Result<Vec<T>, E>``\ （即 ``iter.collect::<Result<Vec<_>, _>>()``\ ）。
+
    - **一句话诀窍**\ ：当你发现手里拿着一个“容器里面装满计算效果”（如 ``[IO a]`` 或 ``[Maybe a]``\ ），而业务需要的是“计算效果里面包裹着容器”（如 ``IO [a]`` 或 ``Maybe [a]``\ ）时，毫不犹豫地唤出 ``sequenceA`` 或 ``traverse``\ ！
 
 为自定义 Tree 实现完整的 Traversable

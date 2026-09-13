@@ -24,16 +24,18 @@ Functor 的形式化定义
 
 .. tip::
 
-   **心智模型突破：把 Functor 理解为 “Mappable”**\ ：
+   **如果你熟悉其他语言：把 Functor 理解为 “Mappable”**\ ：
 
    初学者常被“函子（Functor）”这一高深的范畴论数学名词所震慑。但在日常工程实践中，你可以直接将 Functor 直观理解为 ``Mappable``\ （可执行映射变换的上下文/容器）。
 
    - **通俗直觉**\ ：只要一种数据结构或计算上下文包装了值，并且它允许你\ **传入一个普通纯函数作用于内部的值，同时保持外层包装结构不变**\ ，它就是 Functor。
    - **跨语言映射**\ ：
+
      - **JavaScript / TypeScript**\ ：数组的 ``[].map(...)``\ 、\ ``Promise.then(...)`` （仅针对纯变换时）。
      - **Java**\ ：\ ``Stream.map(...)``\ 、\ ``Optional.map(...)``\ 、\ ``CompletableFuture.thenApply(...)``\ 。
      - **Rust**\ ：\ ``Option::map(...)``\ 、\ ``Result::map(...)``\ 、\ ``Iterator::map(...)``\ 。
      - **Python**\ ：列表推导式 ``[f(x) for x in xs]`` 或内置的 ``map(f, xs)``\ 。
+
    - **严谨性说明**\ ：虽然从严格的范畴论定义来看，Functor 是保持对象与态射结构的范畴映射，且并非所有 Functor 都是物理数据容器（例如函数类型 ``(->) r`` 也是合法的 Functor，它代表计算流水线的后处理映射），**但将 Functor 理解为“支持 map 的抽象上下文（Mappable）”是扫清初学认知障碍、极速建立工程直觉的极佳心智模型**。
 
 常用辅助操作符：<$、$> 与 void
