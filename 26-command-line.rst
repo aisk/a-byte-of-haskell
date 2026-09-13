@@ -312,7 +312,22 @@
    option    :: ReadM a -> Mod OptionFields a -> Parser a    -- 带参数并转换类型，option auto 按 Read 解析
    argument  :: ReadM a -> Mod ArgumentFields a -> Parser a  -- 位置参数，argument str 取原始字符串
 
-这个库的重点不在这几个函数，而在于\ **它没有发明任何自己的组合方式**\ 。描述一个选项、把多个选项合并成一份配置、在两种写法之间二选一，用的全是本书前面已经介绍过的类型类。
+这个库的重点不在这几个函数，而在于 ``Parser`` 和 ``Mod`` 是哪些类型类的实例。在 GHCi 里查一下：
+
+.. code:: text
+
+   ghci> import Options.Applicative
+   ghci> :i Parser
+   ...
+   instance Functor Parser
+   instance Applicative Parser
+   instance Alternative Parser
+   ghci> :i Mod
+   ...
+   instance Semigroup (Mod f a)
+   instance Monoid (Mod f a)
+
+这五行就是理解整个库的关键。\ ``Parser`` 是 Functor、Applicative、Alternative 的实例，\ ``Mod`` 是 Semigroup 和 Monoid 的实例。按类型类一章的全局图景，一个类型实现了某个类型类，那个类型类的运算符和通用函数就全部可用。所以\ **这个库没有发明任何自己的组合方式**\ ：描述一个选项、把多个选项合并成一份配置、在两种写法之间二选一，用的全是本书前面已经介绍过的运算符。
 
 **描述一个选项：Monoid 的 <>**\ 。每个基本解析器接收一个 ``Mod`` 值，说明选项的名字、参数占位、帮助文本、默认值。\ ``Mod`` 是 Monoid 的实例，\ ``long "output"``\ 、\ ``short 'o'``\ 、\ ``metavar "FILE"``\ 、\ ``help "..."``\ 、\ ``value "out.txt"`` 每一个都是一个 ``Mod``\ ，用 Monoid 一章的 ``<>`` 拼起来就是完整的描述。不需要的项直接不写：
 
