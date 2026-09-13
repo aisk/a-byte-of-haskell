@@ -80,10 +80,20 @@ WHNF 与 NF
 
 .. code:: haskell
 
-   import Control.DeepSeq
+   import Control.DeepSeq (force)
+   import Data.IORef
 
-   -- 把嵌套结构完整求值：
-   forcedResult = deepseq myList "计算完成"
+   summarize :: [Int] -> [(Int, Int)]
+   summarize xs = [(x, x * x) | x <- xs]
+
+   main :: IO ()
+   main = do
+     cache <- newIORef []
+     -- 不加 force，写进去的只是一个 Thunk，真正的计算被推迟到第一次读取时
+     writeIORef cache (force (summarize [1 .. 5]))
+     readIORef cache >>= print
+
+``force x`` 等价于 ``x `deepseq` x``\ ：把值求到 NF 再原样返回。上面如果不加 ``force``\ ，\ ``IORef`` 里存的是一个引用着整个输入的 Thunk，输入本身也因此无法回收；什么时候有人读它，什么时候才真正计算。
 
 3. BangPatterns 与严格字段
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -98,6 +108,66 @@ WHNF 与 NF
    sumStrict :: Num a => a -> [a] -> a
    sumStrict !acc []     = acc
    sumStrict !acc (x:xs) = sumStrict (acc + x) xs
+
+实践清单
+--------------------------------------------------------------------------------
+
+上面四种手段各有位置。日常写代码时不需要每处都想一遍求值顺序，记住下面几条默认做法就能避开绝大多数泄漏：
+
+1. **累加器用 foldl' 或 bang**\ 。对有限列表做求和、计数、建 ``Map`` 时用 ``Data.List.foldl'``\ ，手写递归时给累加器加 ``!``\ 。折叠一章的对比表已经说明不带撇号的 ``foldl`` 没有使用理由。
+2. **记录字段默认严格**\ 。数据字段如果只是用来存结果，就加 ``!``\ ，或者在模块顶部开启 ``{-# LANGUAGE StrictData #-}`` 让整个模块的字段默认严格。单子变换子一章的 ``Env`` 把 ``appPort`` 写成 ``!Int`` 就是这个原因：配置在启动时读一次，之后只读不写，没有必要留 Thunk。
+3. **容器选严格版本**\ 。\ ``Data.Map.Strict`` 在插入时就把值求到 WHNF，\ ``Data.Map.Lazy`` 会把 ``insertWith (+)`` 累积成一串加法。\ ``Text`` 和 ``ByteString`` 也各有严格与惰性两种模块，处理整块数据用严格版本，流式处理才用惰性版本。
+4. **存起来之前先 force**\ 。写进 ``IORef``\ 、\ ``TVar``\ 、\ ``MVar``\ ，通过通道发给另一个线程，或者在计时、缓存之前，用 ``force`` 或 ``$!!`` 把值算完。否则存进去的是一个 Thunk，计算会推迟到另一个线程、另一个时刻发生，并且拖住它引用的所有输入。
+5. **不用惰性 IO**\ 。\ ``readFile`` 和 ``hGetContents`` 返回的字符串是边读边生成的，句柄什么时候关闭取决于字符串什么时候被消费完。IO 一章讲了这个问题和替代写法，读整块用 ``Data.Text.IO`` 或 ``Data.ByteString``\ ，按行处理用循环。
+6. **惰性是朋友的场合**\ 。无限生成器（\ ``iterate``\ 、\ ``[1 ..]``\ ）配合 ``take``\ ；\ ``take 5 (filter p xs)`` 找到五个就停；\ ``any``\ 、\ ``all``\ 、\ ``&&`` 短路；\ ``where`` 里绑定几个备选值，最后只用到一个，没用到的不会计算。这些场合下加严格性反而是错的。
+7. **不确定就先量**\ 。\ ``+RTS -s`` 不需要重新编译，一行就能看到最大驻留内存。只有数字异常时才动手加严格性，不要凭感觉到处加 ``!``\ 。
+
+下面是一个真实的泄漏。求平均值，写法看起来再自然不过：
+
+.. code:: haskell
+
+   mean :: [Double] -> Double
+   mean xs = sum xs / fromIntegral (length xs)
+
+   main :: IO ()
+   main = print (mean [1 .. 10000000])
+
+用 ``-O`` 编译后带 ``+RTS -s`` 运行：
+
+.. code:: text
+
+   $ ghc -O Mean.hs -o mean
+   $ ./mean +RTS -s
+   5000000.5
+     234,643,296 bytes maximum residency (9 sample(s))
+             537 MiB total memory in use (0 MiB lost due to fragmentation)
+     Total   time    0.930s  (  0.928s elapsed)
+
+一千万个 ``Double`` 占了五百多兆。问题不在 ``sum`` 或 ``length`` 本身，而在 ``xs`` 被用了两次：\ ``sum`` 遍历时列表元素本来可以边算边回收，但 ``length`` 还要再遍历一遍，于是整个列表被完整保留在内存里。修法是一次遍历同时算出和与个数，累加器用严格元组：
+
+.. code:: haskell
+
+   {-# LANGUAGE BangPatterns #-}
+
+   import Data.List (foldl')
+
+   mean :: [Double] -> Double
+   mean xs = total / fromIntegral count
+     where
+       (total, count) = foldl' step (0, 0 :: Int) xs
+       step (!s, !n) x = (s + x, n + 1)
+
+.. code:: text
+
+   $ ./mean +RTS -s
+   5000000.5
+          44,328 bytes maximum residency (2 sample(s))
+               7 MiB total memory in use (0 MiB lost due to fragmentation)
+     Total   time    0.107s  (  0.107s elapsed)
+
+最大驻留从两百多兆降到几十 KB，时间也从接近一秒降到零点一秒，省下的主要是垃圾回收的时间。注意 ``step`` 里的两个 ``!``\ ：\ ``foldl'`` 只把元组求到 WHNF，元组里面的 ``s + x`` 仍然可以是 Thunk。开 ``-O`` 时优化器通常能自己推断出这里需要严格求值，但不要依赖它：同一段代码去掉 bang 用 ``-O0`` 编译，最大驻留会涨到八百多兆，比原始版本还糟。
+
+``+RTS -s`` 能告诉你有没有泄漏，但不能告诉你泄漏在哪个函数。程序大了以后要靠下面的剖析工具。
 
 性能剖析与空间泄漏定位
 --------------------------------------------------------------------------------
@@ -156,4 +226,6 @@ WHNF 与 NF
 - Haskell 采用按需调用，表达式只在被需要时求值一次，结果被共享。
 - WHNF 只求值最外层构造器，NF 求值到底。
 - ``seq``\ 、\ ``$!``\ 、\ ``deepseq`` 与 ``BangPatterns`` 用于在需要的位置引入严格性。
-- ``-prof`` 配合 ``+RTS -p`` 和 ``-hc`` 可以定位时间热点和空间泄漏。
+- 默认做法：累加器用 ``foldl'`` 或 bang，记录字段加 ``!``\ ，容器选严格版本，存进 ``IORef`` 或跨线程之前先 ``force``\ ，不用惰性 IO。
+- 同一个大列表被遍历两次就会整个留在内存里，改成一次遍历的严格折叠。
+- ``+RTS -s`` 看有没有泄漏，\ ``-prof`` 配合 ``+RTS -p`` 和 ``-hc`` 定位泄漏在哪。
