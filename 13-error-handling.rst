@@ -17,66 +17,11 @@ Maybe：表达“数据可能缺失”
 - ``Nothing``\ ：数据不存在。
 - ``Just a``\ ：包含一个有效的数据 ``a``\ 。
 
-Data.Maybe 常用函数
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-标准库 ``Data.Maybe`` 提供了一组辅助函数：
-
-1. **fromMaybe（提供默认值）**\ ：
-
-   .. code:: haskell
-
-      fromMaybe :: a -> Maybe a -> a
-
-   如果是 ``Just x`` 则取出 ``x``\ ；如果是 ``Nothing`` 则返回给定的默认值：
-
-   .. code:: text
-
-      ghci> import Data.Maybe
-      ghci> fromMaybe 0 (Just 42)
-      42
-      ghci> fromMaybe 0 Nothing
-      0
-
-2. **maybe（解构原语）**\ ：
-
-   .. code:: haskell
-
-      maybe :: b -> (a -> b) -> Maybe a -> b
-
-   同时提供默认值与变换函数，一步完成模式匹配与映射：
-
-   .. code:: text
-
-      ghci> maybe "未知年龄" (\n -> show n ++ " 岁") (Just 25)
-      "25 岁"
-      ghci> maybe "未知年龄" (\n -> show n ++ " 岁") Nothing
-      "未知年龄"
-
-3. **状态判断与列表转换**\ ：
-
-   - ``isJust :: Maybe a -> Bool``
-   - ``isNothing :: Maybe a -> Bool``
-   - ``listToMaybe :: [a] -> Maybe a``\ ：安全地取列表首项（全函数，空列表返回 ``Nothing``\ ）。
-   - ``maybeToList :: Maybe a -> [a]``\ ：把 Maybe 转换为 0 个或 1 个元素的列表。
-
-4. **mapMaybe**\ ：
-
-   .. code:: haskell
-
-      mapMaybe :: (a -> Maybe b) -> [a] -> [b]
-
-   遍历列表，把映射结果为 ``Just`` 的值解包收集，丢弃所有 ``Nothing``\ ：
-
-   .. code:: text
-
-      ghci> import Text.Read (readMaybe)
-      ghci> mapMaybe readMaybe ["10", "abc", "20", "xyz", "30"] :: [Int]
-      [10,20,30]
+它就是上一章的和类型，基数是 ``|a| + 1``\ ；下面的 ``Either`` 同样是和类型。上一章说“非法状态在类型上无法表示”，用到“失败”这件事上就是这两个类型：函数可能失败，就让它的返回类型多出一个分支，而不是返回一个碰巧不能用的值。
 
 .. warning::
 
-   **避免使用 fromJust**\ ：标准库中的 ``fromJust :: Maybe a -> a`` 遇到 ``Nothing`` 时会抛出异常。应当用模式匹配、\ ``fromMaybe`` 或 ``maybe`` 代替。
+   **避免使用 fromJust**\ ：标准库中的 ``fromJust :: Maybe a -> a`` 遇到 ``Nothing`` 时会抛出异常，等于把 Null 引用又请了回来。应当用模式匹配、\ ``fromMaybe`` 或 ``maybe`` 代替。
 
 Either：携带错误原因
 --------------------------------------------------------------------------------
@@ -108,52 +53,115 @@ Either：携带错误原因
 
    - **共同思路**\ ：这些语言都在转向这种错误处理模型：不再返回 ``-1``\ 、\ ``null`` 或直接抛出运行时异常，而是把“可能失败”写进函数的类型签名里。
 
-Data.Either 常用函数
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+用一个任务串起常用函数
+--------------------------------------------------------------------------------
 
-1. **either（解构原语）**\ ：
+``Data.Maybe`` 和 ``Data.Either`` 里的辅助函数不多，与其逐个记，不如看它们在一段真实代码里各自出场的位置。任务是：从一份 ``[(String, String)]`` 形式的配置里取出端口号，转成数字，再检查范围。三步都可能失败，缺键、不是数字、超出范围。
 
-   .. code:: haskell
+最直接的写法是逐层 ``case``\ ：
 
-      either :: (a -> c) -> (b -> c) -> Either a b -> c
+.. code:: haskell
 
-   分别提供错误处理函数与成功处理函数，把两个分支统一为类型 ``c``\ ：
+   import Text.Read (readMaybe)
 
-   .. code:: text
+   config :: [(String, String)]
+   config = [("port", "8080"), ("workers", "abc"), ("timeout", "30")]
 
-      ghci> handleRes = either (\err -> "失败: " ++ err) (\n -> "成功: " ++ show n)
-      ghci> handleRes (Left "网络超时")
-      "失败: 网络超时"
-      ghci> handleRes (Right 200)
-      "成功: 200"
+   portV1 :: Int
+   portV1 =
+     case lookup "port" config of
+       Nothing -> 80
+       Just s -> case readMaybe s of
+         Nothing -> 80
+         Just n -> n
 
-2. **批量拆分**\ ：
+能工作，但默认值 ``80`` 写了两遍，每多一步就多一层缩进。\ ``Data.Maybe`` 的两个函数专门收拾这种代码：
 
-   - ``lefts :: [Either a b] -> [a]``\ ：提取列表中所有的错误项。
-   - ``rights :: [Either a b] -> [b]``\ ：提取列表中所有的成功项。
-   - ``partitionEithers :: [Either a b] -> ([a], [b])``\ ：一次遍历把列表拆成错误列表与成功列表。
+.. code:: haskell
+
+   maybe     :: b -> (a -> b) -> Maybe a -> b   -- Nothing 给默认值，Just 交给函数
+   fromMaybe :: a -> Maybe a -> a               -- 只补默认值
+
+.. code:: haskell
+
+   import Data.Maybe (fromMaybe)
+
+   -- maybe 把“缺键”和“不是数字”折叠成同一个 Nothing
+   parsePort :: Maybe Int
+   parsePort = maybe Nothing readMaybe (lookup "port" config)
+
+   portV2 :: Int
+   portV2 = fromMaybe 80 parsePort
+
+范围检查需要说明失败原因，换成 ``Either``\ 。\ ``either`` 是它的解构函数，两个分支各给一个处理函数，把结果统一成同一种类型：
+
+.. code:: haskell
+
+   either :: (a -> c) -> (b -> c) -> Either a b -> c
+
+.. code:: haskell
+
+   checkPort :: Int -> Either String Int
+   checkPort n
+     | n > 0 && n < 65536 = Right n
+     | otherwise = Left ("端口超出范围: " ++ show n)
+
+   report :: Either String Int -> String
+   report = either ("配置错误: " ++) (\n -> "监听端口 " ++ show n)
 
 .. code:: text
 
-   ghci> import Data.Either
-   ghci> results = [Right 10, Left "超时", Right 20, Left "磁盘满"]
-   ghci> partitionEithers results
-   (["超时","磁盘满"],[10,20])
+   ghci> report (checkPort portV2)
+   "监听端口 8080"
+   ghci> report (checkPort 70000)
+   "配置错误: 端口超出范围: 70000"
 
-纯错误处理与运行时异常的分工
+批量处理时有两种态度。\ ``mapMaybe`` 跳过失败的项，只收集成功的；\ ``traverse`` 要求全部成功，否则整体失败。后者来自 Traversable 一章，这里先看效果：
+
+.. code:: text
+
+   ghci> import Data.Maybe (mapMaybe)
+   ghci> mapMaybe readMaybe ["10", "abc", "20"] :: [Int]
+   [10,20]
+   ghci> traverse readMaybe ["10", "abc", "20"] :: Maybe [Int]
+   Nothing
+   ghci> traverse readMaybe ["10", "20"] :: Maybe [Int]
+   Just [10,20]
+
+还有几个一看名字就知道用途的函数：\ ``isJust``\ 、\ ``isNothing``\ 、\ ``catMaybes``\ （丢掉列表里的 ``Nothing``\ ）、\ ``listToMaybe``\ （安全地取列表首项）、\ ``maybeToList``\ ；\ ``Either`` 这边有 ``lefts``\ 、\ ``rights`` 和 ``partitionEithers``\ （一次遍历把成功和失败分成两个列表）。
+
+怎么选
 --------------------------------------------------------------------------------
 
-Haskell 程序中的错误通常分为两类：
+面对一个可能失败的函数，先问调用方需要知道什么，再决定返回类型：
 
-1. **纯代码中的可恢复错误**\ ：
+.. list-table::
+   :header-rows: 1
+   :widths: 30 26 44
 
-   - **工具**\ ：\ ``Maybe``\ 、\ ``Either``\ 、\ ``ExceptT``\ 。
-   - **原则**\ ：业务上预期内的错误（参数非法、用户不存在、权限不足）应当\ **写在函数的类型签名中**\ 。类型系统会要求调用方处理所有错误分支，否则无法通过编译。
+   * - 调用方需要什么
+     - 用什么
+     - 说明
+   * - 只需要知道有没有
+     - ``Maybe a``
+     - 缺失是正常情况而不是错误，如 ``lookup``\ 、\ ``listToMaybe``\ 、\ ``readMaybe``\ 。
+   * - 需要一句原因，只用来打日志或显示
+     - ``Either String a``
+     - 适合原型和小工具。第九章的 ``decodeUtf8'`` 就是这种签名。
+   * - 需要根据原因分别处理
+     - ``Either MyError a``\ ，\ ``MyError`` 是自定义和类型
+     - 调用方可以模式匹配，编译器检查是否漏了分支。见下一节。
+   * - 多个可能失败的步骤混在 IO 里
+     - ``ExceptT`` 或 ``MonadError``
+     - 避免每一步都手写 ``case``\ ，见单子变换子一章。
+   * - 来自外部环境的故障
+     - ``Control.Exception`` 的异常
+     - 文件不存在、网络中断、磁盘满。这些错误不属于业务逻辑，在 IO 层用 ``try``\ 、\ ``catch`` 处理，见 IO 一章。
+   * - 程序本身的 bug，逻辑上不可能到达的分支
+     - ``error``\ 、\ ``undefined``
+     - 只用于“到了这里说明代码写错了”。预期内的失败（用户输入非法、记录不存在）不能用它们，否则调用方无从处理，类型签名也在撒谎。
 
-2. **IO 中的外部异常**\ ：
-
-   - **工具**\ ：\ ``Control.Exception``\ （\ ``try``\ 、\ ``catch``\ 、\ ``throwIO`` 等）。
-   - **原则**\ ：用于真正来自外部环境的错误（磁盘错误、网络中断、内存耗尽）。
+``String`` 之所以只适合原型，是因为调用方拿到 ``Left "端口超出范围: 70000"`` 后只能原样打印，无法可靠地判断是哪一种错误，更不能让编译器检查“每种错误都处理了”。换成自定义的和类型，这两件事都有了。
 
 .. warning::
 
@@ -164,7 +172,7 @@ Haskell 程序中的错误通常分为两类：
 示例：强类型的业务校验
 --------------------------------------------------------------------------------
 
-实际项目中，应尽量避免用 ``String`` 表达错误，而是为业务定义专门的错误类型：
+按上表的第三行，为业务定义专门的错误类型：
 
 .. code:: haskell
 
@@ -200,10 +208,34 @@ Haskell 程序中的错误通常分为两类：
    ghci> validateAge (-5)
    Left (AgeOutOfRange (-5))
 
+两个校验单独看都很清楚，真正的问题出在把它们组合起来的时候：
+
+.. code:: haskell
+
+   data User = User { userName :: String, userAge :: Int } deriving (Show)
+
+   validateUser :: String -> Int -> ValidationResult User
+   validateUser name age =
+     case validateUsername name of
+       Left err -> Left err
+       Right validName -> case validateAge age of
+         Left err -> Left err
+         Right validAge -> Right (User validName validAge)
+
+.. code:: text
+
+   ghci> validateUser "Alice" 30
+   Right (User {userName = "Alice", userAge = 30})
+   ghci> validateUser "Al" 200
+   Left (UsernameTooShort 2)
+
+``Left err -> Left err`` 这样的分支每加一个字段就要再写一遍，内容完全一样：失败就原样往外传。这正是单子一章要解决的问题，用 ``do`` 记号写出来只剩三行。另外注意上面的组合在第一个错误处就停下了，\ ``"Al"`` 和 ``200`` 两个问题只报了一个；如果想把所有错误一次收齐，要用应用函子一章的 ``Validation``\ 。
+
 小结
 --------------------------------------------------------------------------------
 
-- Haskell 用 ``Maybe`` 与 ``Either`` 代替 Null 引用。
-- ``maybe`` 与 ``either`` 是这两个类型的标准解构函数。
+- ``Maybe`` 与 ``Either`` 只是普通的和类型，Haskell 用它们代替 Null 引用，把“可能失败”写进签名。
+- ``maybe`` 与 ``either`` 是标准解构函数，\ ``fromMaybe`` 补默认值，\ ``mapMaybe`` 跳过失败项，\ ``traverse`` 要求全部成功。
+- 选类型先问调用方需要知道什么：只要有无用 ``Maybe``\ ，要原因用 ``Either``\ ，要分别处理就自定义错误类型，混在 IO 里的多步失败用 ``ExceptT``\ ，环境故障用异常，\ ``error`` 只留给 bug。
 - 避免在纯代码中使用 ``fromJust`` 或 ``throw``\ 。
-- 业务错误用 ``Either`` 写进函数签名；外部环境异常在 IO 层用 ``Control.Exception`` 处理。
+- 逐层 ``case`` 组合多个 ``Either`` 会产生重复的分支，单子一章消除它。
