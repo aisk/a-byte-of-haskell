@@ -52,4 +52,6 @@
    18-reader-state
    19-monad-transformers
    20-non-strictness
-   21-io-modules
+   21-io
+   22-concurrency
+   23-modules-cabal
