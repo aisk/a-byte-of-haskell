@@ -1,7 +1,7 @@
-健壮的错误处理：Maybe 与 Either
+健壮的错误处理：Maybe、Either 与异常模型
 ================================================================================
 
-图灵奖得主托尼·霍尔（Tony Hoare）曾将空指针（Null / Nil）称为计算机科学中“价值十亿美元的愚蠢错误”。隐式的空值会彻底破坏类型系统的可靠性，让运行时充满难以追踪的 NullPointerException。
+图灵奖得主托尼·霍尔（Tony Hoare）曾将空指针（Null / Nil）称为计算机科学中“价值十亿美元的愚蠢错误”。隐式的空值会彻底破坏类型系统的可靠性，让运行时充满难以追踪的崩溃。
 
 Haskell 从语言层面彻底消灭了 Null 引用，将“缺失的数据”与“失败的原因”提升为显式的、强类型的代数数据类型。
 
@@ -18,11 +18,11 @@ Maybe：优雅表达“数据的可能缺失”
 - ``Just a``\ ：包含一个具体的有效数据 ``a``\ 。
 
 Data.Maybe 核心工具箱
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 标准库 ``Data.Maybe`` 提供了极其丰富的辅助函数：
 
-1. **fromMaybe（安全兜底）**\ ：
+1. **fromMaybe（安全默认兜底）**\ ：
 
    .. code:: haskell
 
@@ -38,20 +38,35 @@ Data.Maybe 核心工具箱
       ghci> fromMaybe 0 Nothing
       0
 
-2. **状态判断与列表转换**\ ：
+2. **核心解构函数：maybe（折叠原语）**\ ：
+
+   .. code:: haskell
+
+      maybe :: b -> (a -> b) -> Maybe a -> b
+
+   提供默认值与变换函数，一步完成模式匹配与安全映射：
+
+   .. code:: text
+
+      ghci> maybe "未知年龄" (\n -> show n ++ " 岁") (Just 25)
+      "25 岁"
+      ghci> maybe "未知年龄" (\n -> show n ++ " 岁") Nothing
+      "未知年龄"
+
+3. **状态判断与列表转换**\ ：
 
    - ``isJust :: Maybe a -> Bool``
    - ``isNothing :: Maybe a -> Bool``
-   - ``listToMaybe :: [a] -> Maybe a``\ ：安全提取列表首项（全函数，不会在空列表时抛出异常！）。
+   - ``listToMaybe :: [a] -> Maybe a``\ ：安全提取列表首项（全函数，面对空列表返回 ``Nothing``\ ）。
    - ``maybeToList :: Maybe a -> [a]``\ ：将 Maybe 转换为 0 个或 1 个元素的列表。
 
-3. **数据清洗利器：mapMaybe**\ ：
+4. **数据清洗利器：mapMaybe**\ ：
 
    .. code:: haskell
 
       mapMaybe :: (a -> Maybe b) -> [a] -> [b]
 
-   遍历列表，同时完成计算过滤与 ``Just`` 值的安全解开（自动丢弃所有 ``Nothing``\ ）：
+   遍历列表，同时完成计算过滤与 ``Just`` 值的安全解包（自动丢弃所有 ``Nothing``\ ）：
 
    .. code:: text
 
@@ -61,12 +76,12 @@ Data.Maybe 核心工具箱
 
 .. warning::
 
-   **警惕偏函数 fromJust**\ ：标准库中的 ``fromJust :: Maybe a -> a`` 在遇到 ``Nothing`` 时会直接引发异常崩溃。在生产环境中应严格禁止使用 ``fromJust``\ ，始终使用模式匹配或 ``fromMaybe``\ 。
+   **严禁使用偏函数 fromJust**\ ：标准库中的 ``fromJust :: Maybe a -> a`` 在遇到 ``Nothing`` 时会直接引发异常崩溃。在生产环境中应严格禁止使用 ``fromJust``\ ，始终使用模式匹配、\ ``fromMaybe`` 或 ``maybe``\ 。
 
 Either：携带具体错误原因的计算
 --------------------------------------------------------------------------------
 
-当操作失败时，\ ``Maybe`` 只能告诉调用方“失败了”，却无法给出“为什么失败”。此时我们需要 ``Either``\ ：
+当操作失败时，\ ``Maybe`` 只能告诉调用方“失败了”，却无法告知“因何失败”。此时我们需要 ``Either``\ ：
 
 .. code:: haskell
 
@@ -76,33 +91,67 @@ Either：携带具体错误原因的计算
 - ``Right b``\ ：用于包裹\ **成功的计算结果**\ （“Right”在英文中同时具有“正确”与“右侧”的双重含义）。
 
 Data.Either 核心工具箱
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-除了 ``isLeft`` 与 ``isRight``\ ，最强大的是批量归并函数：
+1. **核心解构函数：either（折叠原语）**\ ：
 
-- ``lefts :: [Either a b] -> [a]``\ ：提取列表中所有的错误项。
-- ``rights :: [Either a b] -> [b]``\ ：提取列表中所有的成功项。
-- ``partitionEithers :: [Either a b] -> ([a], [b])``\ ：一次性将列表拆解为“全部错误组成的列表”与“全部成功结果组成的列表”。
+   .. code:: haskell
+
+      either :: (a -> c) -> (b -> c) -> Either a b -> c
+
+   分别提供错误处理函数与成功处理函数，将双分支统一归一化为类型 ``c``\ ：
+
+   .. code:: text
+
+      ghci> handleRes = either (\err -> "失败: " ++ err) (\n -> "成功: " ++ show n)
+      ghci> handleRes (Left "网络超时")
+      "失败: 网络超时"
+      ghci> handleRes (Right 200)
+      "成功: 200"
+
+2. **批量归并函数**\ ：
+
+   - ``lefts :: [Either a b] -> [a]``\ ：提取列表中所有的错误项。
+   - ``rights :: [Either a b] -> [b]``\ ：提取列表中所有的成功项。
+   - ``partitionEithers :: [Either a b] -> ([a], [b])``\ ：一次性将列表拆解为“全部错误组成的列表”与“全部成功结果组成的列表”。
 
 .. code:: text
 
    ghci> import Data.Either
-   ghci> results = [Right 10, Left "网络超时", Right 20, Left "磁盘已满"]
+   ghci> results = [Right 10, Left "超时", Right 20, Left "磁盘满"]
    ghci> partitionEithers results
-   (["网络超时","磁盘已满"],[10,20])
+   (["超时","磁盘满"],[10,20])
+
+纯错误处理 vs 运行时异常：选型与避坑哲学
+--------------------------------------------------------------------------------
+
+在 Haskell 软件架构中，错误被明确划分为两个世界：
+
+1. **纯代码领域（代数可恢复错误）**\ ：
+   - **适用工具**\ ：\ ``Maybe``\ 、\ ``Either``\ 、\ ``ExceptT``\ 。
+   - **哲学**\ ：业务预期内的错误（如参数非法、用户未找到、权限不足）必须\ **显式编码在函数类型签名中**\ 。类型系统强制调用方必须处理所有错误分支，否则编译无法通过。
+2. **IO 领域（环境外部不可控异常）**\ ：
+   - **适用工具**\ ：\ ``Control.Exception`` （如 ``try``\ 、\ ``catch``\ 、\ ``throwIO``\ ）。
+   - **哲学**\ ：针对真正的灾难性硬件/系统错误（如磁盘断开、网络断开、内存耗尽）。
+
+.. warning::
+
+   **绝对警惕在纯代码中使用纯 throw**\ ：
+   Haskell 允许在任何纯代码中调用 ``throw :: Exception e => e -> a``\ 。但是，因为 Haskell 是惰性求值的，被抛出的纯异常**不会在生成它的地方立即崩溃**，而是像一颗“未引爆的地雷”悬挂在 Thunk 中，直到数个模块之外的代码某天真正求值该值时才不可预期地爆发！
+   **工程铁律**\ ：纯函数只返回 ``Either`` 或 ``Maybe``\ ；如需抛出异常，必须在 ``IO`` 上下文中使用确定性的 ``throwIO``\ 。
 
 实战案例：构建强类型领域业务校验管道
 --------------------------------------------------------------------------------
 
-在真实的工程开发中，我们应当避免使用模糊的 ``String`` 表达错误，而是为业务定义强类型的领域错误枚举：
+在工程开发中，我们应当避免使用模糊的 ``String`` 表达错误，而是为业务定义强类型的领域错误枚举：
 
 .. code:: haskell
 
    -- 强类型领域错误定义
    data ValidationError
-     = UsernameTooShort Int
-     | AgeOutOfRange Int
-     | InvalidEmailFormat String
+     = UsernameTooShort !Int
+     | AgeOutOfRange !Int
+     | InvalidEmailFormat !String
      deriving (Show, Eq)
 
    type ValidationResult a = Either ValidationError a
@@ -130,4 +179,10 @@ Data.Either 核心工具箱
    ghci> validateAge (-5)
    Left (AgeOutOfRange (-5))
 
-通过 ``Either`` 与强类型错误，调用方在编译期就被编译器强制要求处理所有可能的失败分支，系统健壮性从根本上得到保证。
+小结
+--------------------------------------------------------------------------------
+
+- Haskell 用静态代数类型彻底消灭 Null 引用。
+- ``maybe`` 与 ``either`` 提供了标准而完备的高阶函数解构范式。
+- 严禁在纯代码中使用 ``fromJust`` 偏函数或纯 ``throw``\ 。
+- 业务错误使用 ``Either`` 显式标注在函数签名中，系统物理异常在 IO 层由 ``Control.Exception`` 统一防御。
