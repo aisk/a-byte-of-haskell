@@ -89,11 +89,11 @@ do 记号与脱糖规则
 
    **他山之石：多语言心智模型对照**\ ：
 
-   - **直觉通俗化**\ ：**``FlatMappable`` / ``Chainable``（支持自动拍平的动态链式调用）**\ 。
+   - **直觉通俗化**\ ：``FlatMappable`` / ``Chainable``\ （支持自动拍平的动态链式调用）。
    - **跨语言映射**\ ：
-     - **JavaScript / TypeScript**\ ：\ ``Promise.prototype.then(...)``\ 。注意：在 JS 中，若你在 ``then`` 的回调中返回一个新 Promise，运行时会自动将其展平，绝不会产生 ``Promise<Promise<T>>``——这正是 Monad 拍平嵌套上下文的核心能力！
-     - **Java**\ ：\ ``Optional.flatMap(...)``\ 、\ ``Stream.flatMap(...)``\ 、\ ``CompletableFuture.thenCompose(...)``\ 。
-     - **Rust**\ ：\ ``Option::and_then(...)``\ 、\ ``Result::and_then(...)``\ ，以及广受好评的 **``?`` 错误传播操作符**\ （``?`` 本质上就是在 ``Result`` 单子中执行带提前短路返回的 ``>>=``\ ）。
+     - **JavaScript / TypeScript**\ ：``Promise.prototype.then(...)``\ 。注意：在 JS 中，若你在 ``then`` 的回调中返回一个新 Promise，运行时会自动将其展平，绝不会产生 ``Promise<Promise<T>>``——这正是 Monad 拍平嵌套上下文的核心能力！
+     - **Java**\ ：``Optional.flatMap(...)``\ 、\ ``Stream.flatMap(...)``\ 、\ ``CompletableFuture.thenCompose(...)``\ 。
+     - **Rust**\ ：``Option::and_then(...)``\ 、\ ``Result::and_then(...)``\ ，以及广受好评的 ``?`` 错误传播操作符（``?`` 本质上就是在 ``Result`` 单子中执行带提前短路返回的 ``>>=``\ ）。
    - **“可编程的分号”**\ ：
      - 在 C、Java 或 Go 等传统命令式语言中，语句间的分号 ``;`` 只代表机械的顺序流转。
      - 而在 Haskell 的 ``do`` 记号中，\ **换行与分号是可编程的上下文拦截切面**\ ——在迈入下一行之前，单子会自动完成环境预检：在 ``Maybe`` 中自动判定是否为空并短路，在 ``Either`` 中自动拦截错误，在 ``State`` 中自动传递演化状态，在 ``IO`` 中安全编排副作用。

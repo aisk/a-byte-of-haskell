@@ -93,7 +93,7 @@ Traversable 的形式化定义
 
    **他山之石：多语言心智模型对照**\ ：
 
-   - **直觉通俗化**\ ：**``InsideOut``（结构与效果的内外翻转）**\ 。
+   - **直觉通俗化**\ ：``InsideOut``\ （结构与效果的内外翻转）。
    - **跨语言映射**\ ：
      - **JavaScript / TypeScript**\ ：假设你有一个用户 ID 列表 ``users = [1, 2, 3]``\ ，对每个 ID 调用异步查询 ``fetchUser(id)``\ 。若直接映射 ``users.map(fetchUser)``\ ，会得到由 Promise 组成的数组：\ ``[Promise<User>]``\ 。为了将其翻转为“等待全部完成后的单个 Promise”：\ ``Promise<User[]>``\ ，必须书写 ``Promise.all(users.map(fetchUser))``\ 。而在 Haskell 中，这一高频工程操作被一行极其优雅的代码彻底概括：\ ``traverse fetchUser users``\ ！
      - **Java**\ ：将 ``List<CompletableFuture<User>>`` 汇聚为单一的 ``CompletableFuture<List<User>>``\ 。

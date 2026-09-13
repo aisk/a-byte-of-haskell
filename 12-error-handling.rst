@@ -95,13 +95,13 @@ Either：携带具体错误原因的计算
    **他山之石：多语言心智模型对照**\ ：
 
    - **Maybe a**\ ：
-     - **Rust**\ ：等价于 **``Option<T>``**\ （``Some(x)`` 与 ``None``\ ）。
-     - **Java**\ ：类似于 **``Optional<T>``**\ 。
-     - **Swift**\ ：等价于可选类型 **``Optional<T>``**\ （语法糖 ``T?``\ ）。
+     - **Rust**\ ：等价于 ``Option<T>``\ （``Some(x)`` 与 ``None``\ ）。
+     - **Java**\ ：类似于 ``Optional<T>``\ 。
+     - **Swift**\ ：等价于可选类型 ``Optional<T>``\ （语法糖 ``T?``\ ）。
    - **Either a b**\ ：
-     - **Rust**\ ：等价于 **``Result<T, E>``**\ （``Ok(val)`` 对应 ``Right``\ ，\ ``Err(e)`` 对应 ``Left``\ ）。
-     - **Swift**\ ：等价于 **``Result<Success, Failure>``**\ 。
-     - **C++23**\ ：等价于 **``std::expected<T, E>``**\ 。
+     - **Rust**\ ：等价于 ``Result<T, E>``\ （``Ok(val)`` 对应 ``Right``\ ，\ ``Err(e)`` 对应 ``Left``\ ）。
+     - **Swift**\ ：等价于 ``Result<Success, Failure>``\ 。
+     - **C++23**\ ：等价于 ``std::expected<T, E>``\ 。
    - **核心设计哲学**\ ：主流现代系统语言正在全面转向这种函数式错误处理模型——告别返回 ``-1``\ 、\ ``null`` 或粗暴抛出运行时异常的不透明做法，将一切可能失败的操作作为确定性的类型显式暴露在接口签名中。
 
 Data.Either 核心工具箱
