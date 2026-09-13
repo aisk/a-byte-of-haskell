@@ -49,13 +49,29 @@ foldMap 与 Monoid
    [1,2,3]
    ghci> elem 2 myTree
    True
+   ghci> maximum myTree
+   3
+   ghci> find (> 1) myTree
+   Just 2
+   ghci> foldl' (+) 0 myTree
+   6
 
-Data.Foldable 常用函数
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+这些函数全部定义在 ``Data.Foldable`` 里，签名中的容器类型都是 ``Foldable t => t a``\ 。\ ``sum``\ 、\ ``length``\ 、\ ``elem``\ 、\ ``maximum`` 这几个 Prelude 直接导出，\ ``toList``\ 、\ ``find``\ 、\ ``foldl'`` 需要从 ``Data.Foldable`` 导入。
 
-- ``toList :: Foldable t => t a -> [a]``\ ：把任意容器转为列表。
-- ``find :: Foldable t => (a -> Bool) -> t a -> Maybe a``\ ：查找第一个满足条件的元素。
-- ``foldl' :: Foldable t => (b -> a -> b) -> b -> t a -> b``\ ：严格左折叠。
+.. warning::
+
+   Prelude 里的 ``length``\ 、\ ``sum``\ 、\ ``elem`` 都是 ``Foldable`` 上的通用函数，不只对列表有效。\ ``Maybe`` 和二元组也是 ``Foldable`` 实例，所以下面这些都能编译，而且结果往往不是直觉里的那个：
+
+   .. code:: text
+
+      ghci> length (Just 3)
+      1
+      ghci> length (1, 2)
+      1
+      ghci> sum (Just 5)
+      5
+
+   二元组的实例只折叠第二个分量，所以 ``length (1, 2)`` 是 1 而不是 2。想对 ``Maybe`` 或元组“数个数”时，多半是写错了类型；类型检查不会拦住这类错误，只能靠自己留意。
 
 .. tip::
 
@@ -211,6 +227,8 @@ Traversable 的三条法则（Laws）
    ghci> traverse readMaybe ["10", "abc", "30"] :: Maybe [Int]
    Nothing
 
+短路还是累积，取决于传入的 Applicative 而不是 ``traverse`` 本身。把 ``Maybe`` 换成 Applicative 一章的 ``Validation``\ ，同一个 ``traverse`` 就会把所有失败项的错误收集起来，下面一节会演示。
+
 2. 批量执行 IO 动作
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -233,10 +251,53 @@ Traversable 的三条法则（Laws）
      for_ users $ \u -> do
        putStrLn $ "正在通知: " ++ userName u
 
+三层抽象的分工：签名该要哪一层
+--------------------------------------------------------------------------------
+
+到这里，Functor、Applicative、Monad 三层都介绍完了，可以回头看一遍它们各自买到了什么：
+
+.. list-table::
+   :header-rows: 1
+   :widths: 16 30 54
+
+   * - 类型类
+     - 核心操作
+     - 能做什么
+   * - ``Functor``
+     - ``fmap``
+     - 只改上下文里的结果，不新增效果，也不改变结构。
+   * - ``Applicative``
+     - ``pure``\ 、\ ``<*>``
+     - 组合几个彼此独立的效果。哪些效果会发生在运行前就已知，所以可以并行、可以累积错误、可以静态分析。
+   * - ``Monad``
+     - ``>>=``
+     - 后一步可以依赖前一步的返回值。表达力最强，代价是效果只能顺序执行，出错只能短路。
+
+写函数签名时的规则是：\ **要求能写出函数体的最弱约束**\ 。只用 ``fmap`` 就够的函数不要写 ``Monad m =>``\ ，只用 ``<*>`` 组合的函数不要写 ``>>=``\ 。约束越弱，函数能用在越多的类型上，调用者也能从签名直接看出这段代码不会做什么。
+
+``traverse`` 就是这条规则的受益者。它的签名只要求 ``Applicative f``\ ，所以可以用在没有 ``Monad`` 实例的 ``Validation`` 上，把所有错误一次收齐：
+
+.. code:: text
+
+   ghci> checkAge age = if age < 18 then Failure ["年龄必须满 18 岁: " ++ show age] else Success age
+   ghci> traverse checkAge [15, 20, 3]
+   Failure ["年龄必须满 18 岁: 15","年龄必须满 18 岁: 3"]
+   ghci> traverse checkAge [20, 30]
+   Success [20,30]
+
+换成 ``mapM checkAge`` 则直接编译失败，报 ``No instance for (Monad (Validation [String]))``\ 。同一件事，签名多要了一层约束，就把一整类类型挡在了门外。
+
+由此得到两条实践建议：
+
+- 新代码优先用 ``traverse``\ 、\ ``for_``\ 、\ ``sequenceA``\ ，而不是 Monad 一章 ``Control.Monad`` 里的 ``mapM``\ 、\ ``forM_``\ 、\ ``sequence``\ 。后者只是前者限定在 ``Monad`` 上的别名，功能没有多，适用范围却更窄。
+- 自己写实例时也从弱到强：能写 ``Applicative`` 就先写 ``Applicative``\ ，确实需要“下一步依赖上一步”再补 ``Monad``\ 。
+
 小结
 --------------------------------------------------------------------------------
 
 - ``Foldable`` 统一了容器的折叠操作，实现 ``foldMap`` 即可获得 ``sum``\ 、\ ``length``\ 、\ ``toList`` 等全部函数。
 - ``Traversable`` 在遍历容器的同时执行 Applicative 效果，并把内外结构翻转。
-- ``mapM`` 和 ``sequence`` 现在只是 ``traverse`` 和 ``sequenceA`` 限定在 Monad 上的别名。
+- ``mapM`` 和 ``sequence`` 现在只是 ``traverse`` 和 ``sequenceA`` 限定在 Monad 上的别名，新代码优先用后者。
+- 签名只要求能写出函数体的最弱约束：Functor 改结果，Applicative 组合独立效果，Monad 才允许后一步依赖前一步。
+- Prelude 的 ``length``\ 、\ ``sum`` 是 Foldable 通用函数，对 ``Maybe`` 和元组也能用，留意误用。
 - ``DeriveTraversable`` 等扩展可以自动为自定义类型生成这些实例。

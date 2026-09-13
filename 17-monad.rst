@@ -162,46 +162,43 @@ Monad 的三条法则
 Control.Monad 中的常用函数
 --------------------------------------------------------------------------------
 
-实际代码里很少直接写 ``>>=``\ ，更多是使用 ``Control.Monad`` 模块提供的组合子。下面列出的签名都是列表特化后的版本，在现代 ``base`` 中它们实际上定义在 ``Traversable`` 或 ``Foldable`` 上。
+实际代码里很少直接写 ``>>=``\ ，更多是使用 ``Control.Monad`` 模块提供的组合子。下面按“要解决什么问题”分组介绍，签名都写成列表特化后的版本。贯穿的例子是一个小任务：从输入读三行分数，每行都要是 0 到 100 的整数，全部合法且都及格时才写入文件。
 
-1. mapM 与 mapM\_
+先准备一个校验单行的函数：
+
+.. code:: haskell
+
+   import Text.Read (readMaybe)
+
+   parseScore :: String -> Either String Int
+   parseScore s = case readMaybe s of
+     Just n | n >= 0 && n <= 100 -> Right n
+     _ -> Left ("非法分数: " ++ s)
+
+对每个元素做带效果的事：mapM、forM 与 sequence
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-遍历列表，对每个元素执行一个单子动作，并收集所有结果：
+有了 ``parseScore``\ ，校验一整个列表就是 ``mapM``\ ：对每个元素执行一个返回单子的函数，把结果收集成列表。任何一个元素失败，整体就失败：
 
 .. code:: haskell
 
    mapM  :: Monad m => (a -> m b) -> [a] -> m [b]
    mapM_ :: Monad m => (a -> m b) -> [a] -> m ()   -- 忽略返回值，仅保留效果
 
-.. code:: haskell
+.. code:: text
 
-   -- 批量打印输出：
-   printAll :: [String] -> IO ()
-   printAll = mapM_ putStrLn
+   ghci> mapM parseScore ["90", "75", "60"]
+   Right [90,75,60]
+   ghci> mapM parseScore ["90", "x", "60"]
+   Left "非法分数: x"
 
-2. forM 与 forM\_
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-``forM`` 是 ``mapM`` 参数翻转后的版本（\ ``forM = flip mapM``\ ）。循环体较长时，把列表写在前面读起来更像其他语言的 ``for`` 循环：
+``forM`` 是 ``mapM`` 参数翻转后的版本（\ ``forM = flip mapM``\ ）。循环体较长时，把列表写在前面读起来更像其他语言的 ``for`` 循环，所以 IO 代码里更常见的是 ``forM_``\ ：
 
 .. code:: haskell
 
-   import Control.Monad (forM_)
+   forM_ scores $ \s -> putStrLn ("分数: " ++ show s)
 
-   processUsers :: [String] -> IO ()
-   processUsers users = do
-     forM_ users $ \user -> do
-       putStrLn $ "正在初始化用户: " ++ user
-
-3. sequence 与 sequence\_
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-把一个由单子动作组成的列表，变成一个返回结果列表的单子动作：
-
-.. code:: haskell
-
-   sequence :: Monad m => [m a] -> m [a]
+``sequence`` 处理的是已经拿在手里的一列单子动作，把 ``[m a]`` 变成 ``m [a]``\ ，等价于 ``mapM id``\ ：
 
 .. code:: text
 
@@ -210,54 +207,81 @@ Control.Monad 中的常用函数
    ghci> sequence [Just 1, Nothing, Just 3]
    Nothing
 
-4. when 与 unless
+这三个函数在现代 ``base`` 里只是 ``traverse``\ 、\ ``for_``\ 、\ ``sequenceA`` 限定在 ``Monad`` 上的别名，下一章会介绍更通用的版本。
+
+条件执行：when 与 unless
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 在 ``do`` 块中，如果只想在满足条件时执行某个动作，写 ``if cond then action else return ()`` 比较啰嗦。\ ``when`` 与 ``unless`` 是这个写法的简写：
 
 .. code:: haskell
 
-   import Control.Monad (when)
+   when   :: Applicative f => Bool -> f () -> f ()
+   unless :: Applicative f => Bool -> f () -> f ()
 
-   logWarning :: Bool -> String -> IO ()
-   logWarning isSevere msg = do
-     when isSevere $ do
-       putStrLn $ "【警告】: " ++ msg
-
-5. filterM
+重复执行：replicateM 与 forever
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-在单子环境中过滤列表：
+``replicateM n act`` 把一个动作执行 ``n`` 次并收集结果，读固定行数的输入、生成若干个随机数都用它。\ ``forever`` 则无限重复一个动作，常用于服务器主循环或后台线程：
 
 .. code:: haskell
 
-   filterM :: Monad m => (a -> m Bool) -> [a] -> m [a]
+   replicateM :: Applicative m => Int -> m a -> m [a]
+   forever    :: Applicative f => f a -> f b
 
-利用列表单子表示“多种可能”的特性，一行代码就能求出集合的\ **幂集（Powerset）**\ ：
+把上面几个函数放到一起，就是完整的任务：
 
 .. code:: haskell
 
-   powerset :: [a] -> [[a]]
-   powerset = filterM (\_ -> [True, False])
+   import Control.Monad (replicateM, forM_, when, unless)
+
+   main :: IO ()
+   main = do
+     ls <- replicateM 3 getLine                      -- 重复执行：读三行
+     case mapM parseScore ls of                       -- 对每个元素校验，一个失败全失败
+       Left err -> putStrLn err
+       Right scores -> do
+         forM_ scores $ \s -> putStrLn ("分数: " ++ show s)
+         when (all (>= 60) scores) $                  -- 条件执行
+           writeFile "pass.txt" (unlines (map show scores))
+         unless (all (>= 60) scores) $
+           putStrLn "有人不及格，不写文件"
 
 .. code:: text
 
-   ghci> powerset [1, 2]
-   [[1,2],[1],[2],[]]
+   $ printf '90\n40\n60\n' | runghc Scores.hs
+   分数: 90
+   分数: 40
+   分数: 60
+   有人不及格，不写文件
 
-6. replicateM 与 forever
+   $ printf '90\nx\n60\n' | runghc Scores.hs
+   非法分数: x
+
+带累积的遍历：foldM
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``foldM`` 是 ``foldl`` 的单子版本，累加函数可以失败或带效果。比如累加总分，超过上限就中止：
 
 .. code:: haskell
 
-   import Control.Monad (replicateM)
+   foldM :: Monad m => (b -> a -> m b) -> b -> [a] -> m b
 
-   -- 执行 N 次动作并收集结果列表（例如生成 3 个随机数或读取 3 行输入）：
-   -- replicateM :: Monad m => Int -> m a -> m [a]
+   addBounded :: Int -> Int -> Either String Int
+   addBounded acc s
+     | acc + s > 250 = Left "总分超出上限"
+     | otherwise = Right (acc + s)
 
-``forever`` 则是无限重复一个动作，常用于服务器主循环或后台线程。
+.. code:: text
 
-7. Kleisli 组合子 (>=>)
+   ghci> foldM addBounded 0 [90, 75, 60]
+   Right 225
+   ghci> foldM addBounded 0 [90, 95, 99]
+   Left "总分超出上限"
+
+同类的还有 ``filterM``\ ，谓词返回 ``m Bool``\ 。它有一个有名的玩法：利用列表单子表示“多种可能”，\ ``filterM (\_ -> [True, False]) [1, 2]`` 得到 ``[[1,2],[1],[2],[]]``\ ，也就是幂集。日常代码里更常见的用法是 ``filterM doesFileExist paths`` 这种带 IO 的过滤。
+
+复合返回单子的函数：>=>
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 如果两个函数都返回单子上下文（\ ``f :: a -> m b`` 与 ``g :: b -> m c``\ ），普通的 ``.`` 无法直接复合它们。\ ``Control.Monad`` 提供的 ``>=>``\ （有时叫鱼骨操作符）可以把它们接起来：
@@ -289,4 +313,4 @@ Control.Monad 中的常用函数
 - ``Monad`` 通过 ``(>>=)`` 或等价的 ``join`` 解决上下文嵌套的问题。
 - ``do`` 记号是 ``>>=`` 链的语法糖，脱糖规则是机械的。
 - ``MonadFail`` 把可失败模式的支持从 ``Monad`` 中拆了出来，不支持失败的单子里写这种模式会编译报错。
-- ``Control.Monad`` 中的 ``mapM``\ 、\ ``forM``\ 、\ ``when``\ 、\ ``filterM``\ 、\ ``>=>`` 等函数覆盖了大部分日常用法。
+- ``Control.Monad`` 的函数按问题分组记：对每个元素做带效果的事用 ``mapM``\ /\ ``forM_``\ ，条件执行用 ``when``\ /\ ``unless``\ ，重复用 ``replicateM``\ /\ ``forever``\ ，带累积用 ``foldM``\ ，复合用 ``>=>``\ 。

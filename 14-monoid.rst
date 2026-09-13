@@ -139,23 +139,47 @@ Any 与 All
    ghci> pipeline 5
    31   -- 等价于 (+ 1) . (* 2) . (+ 10) $ 5
 
+它的用途是把一串同类型的变换叠成一个函数：一组配置修补、一组中间件、一组对同一记录的修改，都可以先收集成 ``[Endo a]`` 再 ``mconcat``\ ，顺序就是列表顺序。
+
 3. 元组与函数
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-- **元组实例**\ ：若 ``a`` 和 ``b`` 都是 Monoid，则二元组 ``(a, b)`` 也是 Monoid，合并时两个分量各自合并。
-- **函数实例**\ ：若返回值类型 ``b`` 是 Monoid，则函数 ``a -> b`` 也是 Monoid，合并时先分别调用再合并返回值：
+**元组实例**\ ：若 ``a`` 和 ``b`` 都是 Monoid，则 ``(a, b)`` 也是 Monoid，合并时两个分量各自合并。这意味着“几个计数器一起累加”不需要写任何实例：
 
 .. code:: text
 
-   ghci> f1 = \x -> [x]
-   ghci> f2 = \x -> [x * 10]
-   ghci> (f1 <> f2) 5
-   [5,50]
+   ghci> mconcat [(Sum 100, Sum 2), (Sum 150, Sum 0)] :: (Sum Int, Sum Int)
+   (Sum {getSum = 250},Sum {getSum = 2})
+
+下一节的 ``Metrics`` 做的就是同一件事，区别只是给每个分量起了名字。
+
+**函数实例**\ ：若返回值类型 ``b`` 是 Monoid，则 ``a -> b`` 也是 Monoid，合并后的函数对同一个输入分别调用再合并返回值。典型用途是把多个校验器合成一个，每个校验器返回错误列表，合并后一次拿到全部错误：
+
+.. code:: haskell
+
+   -- 沿用上面 Ordering 例子里的 User 类型
+   checkName :: User -> [String]
+   checkName u = if null (userName u) then ["用户名不能为空"] else []
+
+   checkAge :: User -> [String]
+   checkAge u = if userAge u < 18 then ["年龄必须满 18 岁"] else []
+
+   validate :: User -> [String]
+   validate = mconcat [checkName, checkAge]
+
+.. code:: text
+
+   ghci> validate (User 15 "")
+   ["用户名不能为空","年龄必须满 18 岁"]
+   ghci> validate (User 30 "alice")
+   []
+
+新增一条规则只需往列表里加一个函数，不用改 ``validate`` 的定义。
 
 编写自己的 Monoid 实例：指标聚合
 --------------------------------------------------------------------------------
 
-后端统计中经常需要把多个节点上报的指标汇总起来：
+后端统计中经常需要把多个节点上报的指标汇总起来。三个计数器用元组 ``(Sum Int, Sum Int, Sum Double)`` 就能直接 ``mconcat``\ ，但字段一多就分不清哪个是哪个，所以用记录类型给它们起名字，实例按字段逐个合并：
 
 .. code:: haskell
 
