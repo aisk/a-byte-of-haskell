@@ -61,35 +61,9 @@ Record 记录模式解构
    isHighEarner :: Employee -> Bool
    isHighEarner Employee { empSalary = s } = s > 100000
 
-惰性模式（Lazy / Irrefutable Patterns）
---------------------------------------------------------------------------------
-
-默认情况下，Haskell 的模式匹配是\ **可失败的**\ （Refutable Pattern）：它会检查数据构造器是否匹配。如果匹配失败，则跳转到下一个分支。
-
-但在某些场景中，过早检查构造器可能会引发不必要的底（⊥ / Bottom）求值或死循环。此时可以在模式前添加波浪号 ``~``\ ，将其声明为\ **不可失败的惰性模式（Irrefutable Pattern）**\ ：
-
-.. code:: haskell
-
-   -- 普通模式：入参在匹配时会被求值到构造器层级
-   strictPair :: (a, b) -> String
-   strictPair (x, y) = "Pair matched"
-
-   -- 惰性模式：波浪号修饰模式，延迟匹配，不立即求值外层构造器
-   lazyPair :: (a, b) -> String
-   lazyPair ~(x, y) = "Pair matched safely"
-
-在 GHCi 中对比其求值行为：
-
-.. code:: text
-
-   ghci> strictPair undefined
-   *** Exception: Prelude.undefined
-   ghci> lazyPair undefined
-   "Pair matched safely"  -- 模式没有被求值，所以没有崩溃
-
 .. note::
 
-   波浪号 ``~`` 是表达式/方程中的\ **模式修饰符**\ ，不能写在类型签名中。
+   **惰性模式**\ ：模式匹配会把入参求值到能看出构造器为止，\ ``strictPair (x, y) = ...`` 遇到 ``undefined`` 会立刻崩溃。在模式前加波浪号写成 ``lazyPair ~(x, y) = ...``\ ，匹配就被推迟到真正用到 ``x`` 或 ``y`` 的时候。日常代码几乎用不到它，典型场景只有两个：函数必须惰性地返回一个元组（标准库的 ``unzip``\ 、\ ``splitAt``\ ），以及用自引用定义构造循环结构。求值到哪一层、什么叫弱头范式，见惰性求值一章。
 
 编译期穷尽性检查（Exhaustiveness Checking）
 --------------------------------------------------------------------------------
@@ -113,7 +87,7 @@ GHC 会做穷尽性检查。建议始终开启 ``-Wincomplete-patterns`` 编译�
    Pattern match(es) are non-exhaustive
    In an equation for 'headUnsafe': Patterns of type '[a]' not matched: []
 
-实际项目中通常会把这类警告当作错误处理，以保证函数是全函数（Total Function）。
+实际项目中通常会把这类警告当作错误处理，以保证函数是全函数（Total Function）。这正是基础语法一章警告 ``head``\ 、\ ``tail`` 危险的根源：它们对空列表没有分支。有了模式匹配，安全版本可以直接写成 ``safeHead (x : _) = Just x`` 加 ``safeHead [] = Nothing``\ ，把“可能没有结果”放进返回类型里，这是错误处理一章的主题。
 
 条件分支：if-then-else 与 case-of
 --------------------------------------------------------------------------------
@@ -160,6 +134,47 @@ case-of 表达式
 
 ``otherwise`` 在标准库中就是布尔常量 ``otherwise = True``\ ，作为所有未命中条件的默认分支。
 
+四种写法的分工
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+到这里已经有了方程式模式匹配、\ ``case``\ 、\ ``if`` 和守卫四种分支手段，它们不是互相替代的关系，各有最自然的位置。用同一个任务来看：把 HTTP 状态码变成一句提示。
+
+.. code:: haskell
+
+   -- 模式匹配处理少数具体值，守卫处理范围，两者可以叠在同一个函数里
+   describe :: Int -> String
+   describe 200 = "成功"
+   describe 404 = "资源未找到"
+   describe code
+     | code >= 500 && code < 600 = "服务器错误 " ++ show code
+     | code >= 400               = "客户端错误 " ++ show code
+     | otherwise                 = "其他状态码 " ++ show code
+
+   -- case 匹配的是中间结果，而不是函数的入参
+   firstFailure :: [Int] -> String
+   firstFailure codes = case filter (>= 400) codes of
+     []      -> "全部成功"
+     (c : _) -> "首个失败: " ++ describe c
+
+   -- if 只在表达式内部做一次布尔取舍
+   retryHint :: Int -> String
+   retryHint code = describe code ++ (if code >= 500 then "，可以重试" else "，不要重试")
+
+.. code:: text
+
+   ghci> describe 503
+   "服务器错误 503"
+   ghci> firstFailure [200, 200, 404, 500]
+   "首个失败: 资源未找到"
+   ghci> retryHint 403
+   "客户端错误 403，不要重试"
+
+- **方程式模式匹配**\ ：按构造器或少数几个字面量分派，同时把字段解构出来。它只能判断“长什么样”，表达不了范围。
+- **守卫**\ ：按布尔条件或数值范围分派。
+- **模式加守卫**\ ：先按结构拆开，再按条件细分。这是最常见的组合，下一章的 ``factorial`` 就是先匹配 ``0``\ ，再用守卫检查 ``n > 0``\ 。
+- **case**\ ：要匹配的不是入参而是某个中间结果，或者匹配出现在一个更大表达式的中间。方程式写法只能匹配参数，\ ``case`` 可以匹配任何表达式。
+- **if**\ ：只有一个布尔条件，而且嵌在表达式内部。一旦条件多于一个，或者需要 ``else if`` 链，换成守卫。
+
 函数操作符：$ 与 .
 --------------------------------------------------------------------------------
 
@@ -205,12 +220,12 @@ case-of 表达式
    countEvenSquares' :: [Int] -> Int
    countEvenSquares' = length . filter even . map (^2)
 
-无点风格使代码聚焦于“数据流经的变换管道”，而不是临时变量的逐层传递。
+无点风格使代码聚焦于“数据流经的变换管道”，而不是临时变量的逐层传递。从 ``countEvenSquares xs = ...`` 到 ``countEvenSquares' = ...``\ ，两边同时去掉的那个 ``xs`` 就是第一章的 η 约简，\ ``.`` 只是让约简后的右侧仍然可读。
 
 小结
 --------------------------------------------------------------------------------
 
 - 模式匹配同时完成结构检查、解构与分支分发。
-- 惰性模式 ``~`` 延迟对构造器的求值，只能写在参数模式里。
-- ``-Wincomplete-patterns`` 让编译器检查模式是否穷尽。
+- ``-Wincomplete-patterns`` 让编译器检查模式是否穷尽，穷尽的模式匹配就是全函数。
+- 模式匹配管结构，守卫管条件，两者常叠用；\ ``case`` 匹配中间结果，\ ``if`` 只做单个布尔取舍。
 - ``$`` 用于减少括号，\ ``.`` 用于组合函数并写出无点风格。
