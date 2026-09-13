@@ -141,38 +141,69 @@ GHC 运行时的设计哲学完全不同：
 纯函数式无死锁状态：软件事务内存（STM）
 --------------------------------------------------------------------------------
 
-传统多线程并发通过互斥锁（Mutex）保护共享可变内存，但极易引发**死锁（Deadlock）**、**优先级反转**以及**细粒度锁组合灾难**。
+传统多线程编程通常通过互斥锁（Mutex / Lock）来保护共享可变内存。然而，基于锁的并发模型有着臭名昭著的缺陷：
+
+- **死锁（Deadlock）**\ ：两个线程以不同的顺序申请锁 A 与锁 B，极易引发死锁；
+- **锁无法自由组合**\ ：如果模块 X 与模块 Y 各自是线程安全的，将它们组合成一个复合操作（如从账户 A 转账到账户 B）通常必须暴露内部锁细节或引入更粗粒度的全局大锁，破坏封装性与并发吞吐；
+- **竞态与条件变量的噩梦**\ ：传统 ``wait()`` 与 ``notify()``\ / 条件变量不仅难以编写，还容易出现虚假唤醒（Spurious Wakeup）与丢失唤醒。
 
 Haskell 首创了将数据库事务（ACID）思想引入内存并发的顶尖方案——\ **软件事务内存（Software Transactional Memory, STM）**\ 。
 
-定义在 ``Control.Concurrent.STM`` 中：
+核心原语：TVar、atomically 与 retry
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+在 ``Control.Concurrent.STM`` 中：
 
 .. code:: haskell
 
    import Control.Concurrent.STM
 
-   -- 线程安全的事务性变量
+   -- 1. 事务性变量：只能在 STM 单子内读写
    type BankAccount = TVar Int
 
-   -- 纯事务性转账动作（注意：返回类型是 STM ()，绝非 IO！）
+   -- 2. 纯事务动作（注意：类型是 STM ()，绝非 IO！）
    transfer :: BankAccount -> BankAccount -> Int -> STM ()
    transfer fromAcc toAcc amount = do
      fromBal <- readTVar fromAcc
      if fromBal < amount
-       then retry -- 余额不足，自动挂起并等待 fromAcc 发生变化后再试！
+       then retry -- 余额不足：智能挂起当前线程，等待相关 TVar 变动后再试！
        else do
          writeTVar fromAcc (fromBal - amount)
          toBal <- readTVar toAcc
          writeTVar toAcc (toBal + amount)
 
-   -- 在 IO 中原子化提交事务
+   -- 3. 在 IO 中原子化提交事务
    executeTransfer :: BankAccount -> BankAccount -> IO ()
    executeTransfer a b = atomically (transfer a b 100)
 
-STM 的绝妙优势：
-1. **天然杜绝死锁**\ ：事务内无需显式加锁。STM 会记录读写日志，并在提交时通过原子性 CAS 检测冲突。如果检测到数据被其他线程并发修改，当前事务会自动回滚并透明重试（Optimistic Concurrency Control）；
-2. **纯函数式事务组合**\ ：多个小的 ``STM`` 操作可以通过普通 Monad 操作符无缝拼装为一个庞大的复合事务，而无需担心破坏锁顺序；
-3. **强大的 ``retry`` 原语**\ ：当条件不满足时，调用 ``retry`` 会自动智能阻塞挂起当前线程，直到事务读取过的某个 ``TVar`` 被其他事务修改时才会被精准唤醒。
+事务回退与备选分支：orElse
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+STM 另一个惊艳工业界的特性是组合子 ``orElse``\ ：
+
+.. code:: haskell
+
+   -- 优先从主账户取款，若余额不足（触发 retry），自动平滑尝试从备用账户取款：
+   smartWithdraw :: BankAccount -> BankAccount -> Int -> BankAccount -> STM ()
+   smartWithdraw primary secondary amount target =
+     transfer primary target amount `orElse` transfer secondary target amount
+
+基于锁的模型根本无法实现类似 ``orElse`` 的能力，因为在传统锁模型中，若第 1 步失败，很难自动回滚已经获取的锁并无副作用地尝试第 2 步。
+
+.. tip::
+
+   **如果你熟悉其他语言：为什么只有 Haskell 的 STM 真正成功了？**\ ：
+
+   - **命令式语言的惨痛教训**\ ：
+     STM 概念早在学术界被提出，并在 Java、C++ 等命令式语言中尝试过工程落地，但无一例外走向了衰落甚至失败。**根本原因在于命令式语言无法阻止在事务内执行不可逆的物理副作用**\ ！
+     如果在 Java 事务内部调用了打印、网络请求甚至硬件控制，当事务检测到数据冲突需要“回滚（Rollback）”时，运行时根本无法“撤销”已经发送的网络包或打印出去的日志。
+   - **类型系统铸就的函数式护城河**\ ：
+     Haskell 的类型系统将副作用隔离到了极致——\ **在 ``STM`` 单子内，编译器严禁包含任何 ``IO`` 动作**\ ！你在 ``STM`` 中所做的一切，仅仅是对 ``TVar`` 读写日志的纯内存记录。因为绝无不可逆的物理副作用，GHC 运行时可以随心所欲、百分之百安全地将事务**透明回滚并重试**（乐观并发控制，Optimistic Concurrency Control）。
+   - **对比各大主流语言的并发状态模型**\ ：
+
+     - **Go**\ ：推荐通过 Channel 传递数据（CSP 模型），但在处理复杂共享状态时仍需依赖 ``sync.Mutex``\ ，死锁与锁竞态风险依然由开发者人工肉身防范。
+     - **Rust**\ ：通过所有权类型系统（\ ``Arc<Mutex<T>>``\ ）在编译期消灭了数据竞争（Data Race），但在运行期依然可能因为加锁顺序不当发生死锁。
+     - **Haskell STM**\ ：将并发状态推升到了数据库级别的\ **可串行化（Serializable）隔离级别**\ ——无死锁、无锁竞态、支持声明式条件重试（\ ``retry``\ ）与任意细粒度原子组合（\ ``orElse``\ ）。
 
 小结
 --------------------------------------------------------------------------------
