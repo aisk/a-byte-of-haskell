@@ -4,9 +4,9 @@
 简明 Haskell 教程
 ================================================================================
 
-欢迎阅读《简明 Haskell 教程》。这是一本专为希望深入理解函数式编程范式的开发者编写的系统指南。
+这是一本面向有编程经验的读者的 Haskell 入门教程。
 
-本书立足于严格的函数式思维与现代 Haskell 语言特性，不仅深入剖析数学原理与类型系统，更详尽覆盖了实战开发中必不可少的常用数据容器（List、Map、Set、Vector、Text 与 ByteString）以及进阶单子体系。
+全书从 Lambda 演算和类型系统讲起，覆盖常用的数据结构（List、Map、Set、Vector、Text 与 ByteString），再进入 Monoid、Functor、Applicative、Monad 等抽象，最后讨论惰性求值、IO、并发和项目组织。各章末尾都有小结，多数章节还附有面向其他语言使用者的类比说明。
 
 .. toctree::
    :maxdepth: 2
@@ -27,31 +27,32 @@
 
 .. toctree::
    :maxdepth: 2
-   :caption: 第三部分：常用数据结构与集合容器
+   :caption: 第三部分：数据结构与数据建模
 
    08-lists
-   09-folds
-   10-collections
-   11-adts
-   12-error-handling
+   09-strings
+   10-folds
+   11-collections
+   12-adts
+   13-error-handling
 
 .. toctree::
    :maxdepth: 2
    :caption: 第四部分：抽象代数与函子单子体系
 
-   13-monoid
-   14-functor
-   15-applicative
-   16-monad
-   17-foldable-traversable
+   14-monoid
+   15-functor
+   16-applicative
+   17-monad
+   18-foldable-traversable
 
 .. toctree::
    :maxdepth: 2
    :caption: 第五部分：深入计算与工程实践
 
-   18-reader-state
-   19-monad-transformers
-   20-non-strictness
-   21-io
-   22-concurrency
-   23-modules-cabal
+   19-reader-state
+   20-monad-transformers
+   21-non-strictness
+   22-io
+   23-concurrency
+   24-modules-cabal

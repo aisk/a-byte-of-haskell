@@ -40,6 +40,7 @@ release = ''
 # ones.
 extensions = [
     'sphinx.ext.githubpages',
+    'sphinxcontrib.mermaid',
 ]
 
 # Add any paths that contain templates here, relative to this directory.

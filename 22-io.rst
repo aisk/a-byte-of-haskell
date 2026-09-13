@@ -1,0 +1,249 @@
+输入输出（I/O）与副作用模型
+================================================================================
+
+不少初学者对"纯函数式语言"的印象是：函数必须满足数学意义上的纯粹性，不允许有任何副作用（Side Effect）。但一个不能读取输入、不能打印输出、不能读写文件的程序没有实际用处。
+
+Haskell 如何既保持"引用透明"的原则，又能和外部世界交互？本章介绍 **IO 单子** 的模型，以及文件操作、资源管理和异常处理的常见写法。
+
+为什么需要单独的 IO 类型？
+--------------------------------------------------------------------------------
+
+先看它要解决的问题：\ **引用透明性（Referential Transparency）**\ 。
+
+在纯函数式语言中，同一个函数接收相同输入，就\ **必须返回相同结果**\ （如同数学中的 :math:`f(x) = x^2`\ ）。函数调用也不能对外部环境产生可观测的改变。
+
+现在考虑一个从控制台读取一行的"函数"：
+
+.. code:: text
+
+   -- 假设存在这样一个纯值：
+   badGetLine :: String
+
+如果 ``badGetLine`` 是普通的值，用户第一次输入 ``"Alice"``\ ，第二次输入 ``"Bob"``\ ，那么同一段代码里多次使用 ``badGetLine`` 就会得到不同的结果。
+表达式 ``badGetLine == badGetLine`` 可能返回 ``False``\ ，等式推导（Equational Reasoning）不再成立，编译器依赖引用透明性做的优化（如公共子表达式消除）也会产生错误结果。
+
+因此，Haskell 不允许任何普通函数直接从外部读取数据或修改外部状态。
+
+IO 的心智模型：动作的描述
+--------------------------------------------------------------------------------
+
+Haskell 的解决方案是\ **把"描述一个副作用"和"执行这个副作用"分开**\ 。
+
+1. IO 值是动作的描述
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+类型为 ``IO a`` 的值，\ **不是已经执行完的结果，也不是正在执行的过程，而是一份不可变的"动作描述"**\ 。
+
+- 写下 ``putStrLn "Hello World"`` 时，它的类型是 ``IO ()``\ 。
+- 此时屏幕上\ **什么都不会打印**\ 。这个表达式只是构造了一个值，描述"向标准输出写入这段文本"这个动作。
+
+构造这个描述的过程是纯的：在代码里写 100 次 ``putStrLn "Hello"``\ ，得到的是 100 个相同的值。
+
+2. 动作由运行时执行
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+那这些动作什么时候真正变成屏幕上的字符或网络上的数据包？
+
+Haskell 程序的入口固定为：
+
+.. code:: haskell
+
+   main :: IO ()
+
+程序员写的全部代码，本质上是在组装一个大的动作描述，也就是 ``main``\ 。
+程序启动后，链接进可执行文件里的 **GHC 运行时系统（Runtime System，RTS）** 接管 ``main`` 这个动作，按描述依次执行系统调用。你写的代码从未直接接触硬件，它只是在描述要做什么。
+
+下图把"描述"和"执行"两个阶段分开画出。左边是纯代码，只负责把小动作组合成 ``main``\ ；右边是链接进可执行文件的运行时，负责真正执行：
+
+.. mermaid::
+
+   graph LR
+     subgraph pure["纯代码：构造描述"]
+       A1["putStr #quot;请输入姓名: #quot;<br/>IO ()"] --> M["main :: IO ()<br/>由 #gt;#gt;= 串起来的动作描述"]
+       A2["getLine<br/>IO String"] --> M
+       A3["putStrLn (#quot;你好, #quot; ++ name)<br/>IO ()"] --> M
+     end
+     subgraph rts["GHC RTS：执行描述"]
+       R1["取出下一个动作"] --> R2["发起系统调用<br/>write / read"]
+       R2 --> R3["把结果交给<br/>后续动作"]
+       R3 --> R1
+     end
+     M -- "程序启动时交给 RTS" --> R1
+
+在左边的阶段，代码无论求值多少次都只是在构造同样的描述，引用透明性得以保持。副作用只发生在右边的阶段。
+
+3. IO 也是承载结果的容器（Monad）
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+如果一个动作执行后会产生数据（例如读取一行文本），它的类型就是 ``IO String``\ 。
+
+- 可以把 ``IO String`` 看作一个\ **装着未来执行结果的容器**\ 。
+- 为了不让外部数据污染纯逻辑，标准库没有安全的 ``IO a -> a`` 函数（\ ``unsafePerformIO`` 存在，但不应在普通代码中使用）。
+- 大多数程序的逻辑是\ **一连串有先后依赖的 IO 动作**\ ：先读配置文件，再根据配置连接数据库，再查询数据。
+
+这正是 **Monad** 在这里的作用：通过 ``>>=``\ ，前一个动作产生的值可以传给下一个动作的构造函数，动态决定下一步做什么。
+
+.. tip::
+
+   **如果你熟悉其他语言：IO 动作类似 Promise，do 记号类似 async/await**\ ：
+
+   - **IO 动作与 JavaScript Promise**\ ：
+     在 JS 中，异步函数返回的 ``Promise<T>`` 本身是一个携带任务描述的对象，代表"未来的计算和结果"。Haskell 的 ``IO a`` 与之类似：传递的是动作描述，执行后在容器内交付结果。
+   - **do 记号与 async/await**\ ：
+     JS 引入 ``async/await`` 是为了避免层层 ``.then(res => ...)``\ 。Haskell 的 ``do`` 记号扮演同样的角色：
+
+     .. code:: haskell
+
+        getUserInput :: IO ()
+        getUserInput = do
+          putStr "请输入姓名: "
+          name <- getLine       -- 相当于 const name = await getLine();
+          putStrLn ("你好, " ++ name)
+
+     通过 ``name <- getLine``\ ，我们把结果 ``name`` 取出来给下一行使用。编译器会把它脱糖为 ``>>=`` 链。
+
+基础控制台 I/O
+--------------------------------------------------------------------------------
+
+Prelude 提供了最常用的终端交互函数：
+
+.. code:: haskell
+
+   putStrLn :: String -> IO ()        -- 输出字符串并换行
+   putStr   :: String -> IO ()        -- 输出字符串（不换行）
+   getLine  :: IO String              -- 从标准输入读取一行
+   print    :: Show a => a -> IO ()   -- 打印实现了 Show 的值（等价于 putStrLn . show）
+
+完整示例：
+
+.. code:: haskell
+
+   main :: IO ()
+   main = do
+     putStr "请输入您的年龄: "
+     ageStr <- getLine
+     case reads ageStr of
+       [(age, "")] ->
+         putStrLn $ "明年您将 " ++ show (age + 1 :: Int) ++ " 岁。"
+       _ ->
+         putStrLn "输入格式有误，请输入纯数字。"
+
+文件句柄与资源安全
+--------------------------------------------------------------------------------
+
+基于 Handle 的操作
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+涉及文件、套接字等系统资源时，使用基于句柄（Handle）的操作。\ ``System.IO`` 提供了生命周期管理：
+
+.. code:: haskell
+
+   import System.IO
+
+   safeReadDemo :: FilePath -> IO ()
+   safeReadDemo path =
+     withFile path ReadMode $ \handle -> do
+       contents <- hGetContents handle
+       putStrLn "=== 文件内容 ==="
+       putStr contents
+
+``withFile`` 的行为类似 Python 的 ``with open(...) as f:`` 或 Java 的 try-with-resources：无论作用域内的操作正常结束还是抛出异常，文件句柄都会被关闭。
+
+惰性 I/O 的问题
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Prelude 提供了 ``readFile :: FilePath -> IO String``\ 。它用起来方便，但有一些需要了解的行为。
+
+.. warning::
+
+   **惰性 I/O 与句柄生命周期**\ ：
+
+   ``readFile`` 采用"惰性 I/O"：它不会立刻把整个文件读入内存，而是返回一个惰性的 ``String``\ 。底层的文件句柄会一直保持打开，直到这个字符串被下游完全消费。
+
+   - **句柄延迟关闭**\ ：如果函数只读了前几行就返回，句柄可能在很长时间内不被回收。大量这样的调用会耗尽系统的文件描述符。
+   - **写锁冲突**\ ：如果在惰性读取尚未结束时，程序其他部分尝试写同一个文件，会触发文件锁异常（ResourceBusy）。
+   - **一般建议**\ ：避免使用 Prelude 的 ``readFile`` 和 ``hGetContents``\ ，改用 ``Data.Text.IO`` 或 ``Data.ByteString`` 的严格读取函数（如 ``TIO.readFile``\ ）；处理超大文件时使用流式库（streaming、conduit 或 pipes）。
+
+资源管理：bracket
+--------------------------------------------------------------------------------
+
+处理网络连接、数据库连接、锁等资源时，需要比 ``try-finally`` 更可靠的保证。\ ``Control.Exception`` 提供了 ``bracket``\ ：
+
+.. code:: haskell
+
+   bracket :: IO a          -- 1. 分配资源（Allocate）
+           -> (a -> IO b)   -- 2. 释放资源（Cleanup）
+           -> (a -> IO c)   -- 3. 使用资源（Use）
+           -> IO c
+
+``bracket`` 保证两点：
+
+1. 即使"使用资源"过程中发生异常、收到异步信号、或被其他线程取消（ThreadKilled），\ **释放动作一定会执行**\ 。
+2. "分配资源"到"注册释放动作"之间处于屏蔽（masked）状态，异步异常不会在这个间隙打断，因此不会出现资源已分配但释放动作尚未注册的窗口。
+
+示例：数据库连接的释放
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code:: haskell
+
+   import Control.Exception (bracket)
+
+   data DBConn = DBConn String
+
+   openConn :: String -> IO DBConn
+   openConn url = do
+     putStrLn $ "==> 连接数据库: " ++ url
+     return (DBConn url)
+
+   closeConn :: DBConn -> IO ()
+   closeConn (DBConn url) =
+     putStrLn $ "<== 断开数据库连接: " ++ url
+
+   runQuery :: DBConn -> IO ()
+   runQuery (DBConn url) = do
+     putStrLn $ "正在 " ++ url ++ " 上执行事务..."
+     -- 即使这里抛出异常，closeConn 也会执行
+
+   executeDatabaseTask :: IO ()
+   executeDatabaseTask =
+     bracket (openConn "postgres://localhost:5432/app")
+             closeConn
+             runQuery
+
+运行时异常：Control.Exception
+--------------------------------------------------------------------------------
+
+纯代码与 IO 中的错误分工很清楚：
+
+- **可预期的业务失败**\ ：用 ``Maybe``\ 、\ ``Either`` 或 ``ExceptT``\ ，把错误写在类型签名里；
+- **外部环境的故障**\ ：如磁盘错误、网络中断、权限不足，用 ``Control.Exception`` 捕获与恢复。
+
+使用 try 与 catch
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code:: haskell
+
+   import Control.Exception
+   import qualified Data.Text.IO as TIO
+   import qualified Data.Text as T
+
+   safeLoadConfig :: FilePath -> IO (Either IOException T.Text)
+   safeLoadConfig path = try (TIO.readFile path)
+
+   demoExceptionHandler :: IO ()
+   demoExceptionHandler = do
+     result <- safeLoadConfig "config.yaml"
+     case result of
+       Left ex ->
+         putStrLn $ "加载配置失败，使用默认配置。原因: " ++ show ex
+       Right content ->
+         putStrLn $ "配置加载成功，大小: " ++ show (T.length content) ++ " 字符"
+
+小结
+--------------------------------------------------------------------------------
+
+- ``IO a`` 是对副作用的描述，而不是副作用本身。描述在 ``main`` 中组装，由 GHC 运行时执行。
+- ``IO a`` 也可以看作装着执行结果的容器，类似 JavaScript 的 ``Promise``\ ；\ ``do`` 记号对应 ``async/await``\ 。
+- Prelude 的 ``readFile`` 是惰性 I/O，句柄关闭时机不可控，一般改用 ``Data.Text.IO`` 或 ``Data.ByteString`` 的严格读取。
+- 需要释放的资源用 ``bracket`` 或 ``withFile`` 管理。
+- 业务错误用 ``Either``\ ，外部环境异常用 ``Control.Exception`` 的 ``try`` / ``catch``\ 。
