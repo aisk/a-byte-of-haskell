@@ -1,0 +1,224 @@
+单子（Monad）与 do 记号深度解析
+================================================================================
+
+在函数式编程的世界里，“Monad”曾被赋予了过多神秘的隐喻。然而撕开抽象的外衣，Monad 的数学与工程本质极其明确：\ **它定义了如何将产生上下文的计算串联起来，并在每一步计算中自动扁平化嵌套的上下文层级**\ 。
+
+为什么需要 Monad？破除层层嵌套
+--------------------------------------------------------------------------------
+
+假设我们在构建一个电商系统的订单查询管道。每一阶段都可能因数据不存在而返回 ``Maybe``\ ：
+
+.. code:: haskell
+
+   getUser   :: String -> Maybe User
+   getOrder  :: User -> Maybe Order
+   getPay    :: Order -> Maybe Payment
+
+如果我们仅仅使用 ``fmap``\ ：
+
+.. code:: text
+
+   fmap getOrder (getUser "Alice")
+   -- 返回类型变成了 Maybe (Maybe Order)！
+
+如果继续链式调用，返回值将被层层嵌套为令人绝望的 ``Maybe (Maybe (Maybe Payment))``\ 。普通函数式机制无法把产生新上下文的函数与已有上下文拍平。为了解决这一痛点，我们引入了 **Monad**\ 。
+
+Monad 的形式化定义
+--------------------------------------------------------------------------------
+
+定义在标准 Prelude 中：
+
+.. code:: haskell
+
+   class Applicative m => Monad m where
+     -- 将普通值放入最小上下文（等价于 Applicative 的 pure）
+     return :: a -> m a
+     return = pure
+
+     -- 核心绑定操作符（Bind）
+     (>>=) :: m a -> (a -> m b) -> m b
+
+     -- 忽略前项返回值的顺序执行
+     (>>) :: m a -> m b -> m b
+     m >> k = m >>= \_ -> k
+
+核心操作符 ``>>=``\ （读作 **Bind**\ ）的核心职责是：
+**从上下文 m a 中提取出纯值 a，将其传给产生新上下文的函数 (a -> m b)，并将结果在同一层级内自然返回，绝不产生嵌套。**
+
+join 的等价视角
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Monad 还可以完全通过 ``join`` 函数来理解：
+
+.. code:: haskell
+
+   join :: Monad m => m (m a) -> m a
+
+``join`` 的唯一职责就是将两层相同的上下文拍平成单层（例如将 ``[[a]]`` 拍平为 ``[a]``\ ，将 ``Just (Just x)`` 拍平为 ``Just x``\ ）。在范畴论中，\ ``m >>= f`` 完全等价于 ``join (fmap f m)``\ 。
+
+do 记号与脱糖规则
+--------------------------------------------------------------------------------
+
+连续书写 ``>>=`` 与匿名函数会使代码向右倾斜。Haskell 提供了语法糖 **do 记号**\ ，让具有时序依赖的纯函数计算能够以命令式的清晰外观呈现：
+
+.. code:: haskell
+
+   getFinalPayment :: String -> Maybe Payment
+   getFinalPayment name = do
+     user    <- getUser name
+     order   <- getOrder user
+     payment <- getPay order
+     return payment
+
+编译器对 ``do`` 代码块的脱糖规则极其机械透明：
+
+1. **带箭头提取**\ ：\ ``x <- m; rest`` 展开为 ``m >>= \x -> rest``
+2. **不带提取的顺序执行**\ ：\ ``m1; m2`` 展开为 ``m1 >> m2``
+3. **局部纯计算**\ ：\ ``let x = val`` 展开为常规局部绑定。
+
+因此，上面清爽的 ``do`` 代码在底层编译后就是一条完全纯净的数学管道：
+
+.. code:: haskell
+
+   getFinalPayment name =
+     getUser name >>= \user ->
+       getOrder user >>= \order ->
+         getPay order
+
+Monad 三大法则
+--------------------------------------------------------------------------------
+
+任何合法的 Monad 实例必须遵守以下三大定律：
+
+1. **左单位元（Left Identity）**\ ：
+
+   .. code:: text
+
+      return x >>= f  ==  f x
+
+2. **右单位元（Right Identity）**\ ：
+
+   .. code:: text
+
+      m >>= return  ==  m
+
+3. **结合律（Associativity）**\ ：
+
+   .. code:: text
+
+      (m >>= f) >>= g  ==  m >>= (\x -> f x >>= g)
+
+这保证了我们在代码重构、拆分辅助函数时，计算管道的行为严格确定一致。
+
+Control.Monad 核心高阶控制流工具大全
+--------------------------------------------------------------------------------
+
+在真实的工程实践中，我们很少直接写原始的 ``>>=``\ ，而是大量使用 ``Control.Monad`` 模块提供的高阶控制流组合子：
+
+1. mapM 与 mapM\_
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+遍历列表，对每个元素执行产生单子效果的动作，并收集所有计算结果：
+
+.. code:: haskell
+
+   mapM  :: Monad m => (a -> m b) -> [a] -> m [b]
+   mapM_ :: Monad m => (a -> m b) -> [a] -> m ()   -- 忽略返回值，仅保留效果
+
+.. code:: haskell
+
+   -- 批量打印输出：
+   printAll :: [String] -> IO ()
+   printAll = mapM_ putStrLn
+
+2. forM 与 forM\_：命令式循环体验
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``forM`` 是 ``mapM`` 的参数翻转版本（\ ``forM = flip mapM``\ ）。当循环体内部逻辑较长时，它能提供如同主流语言中 ``for`` 循环一样的自然阅读体验：
+
+.. code:: haskell
+
+   import Control.Monad (forM_)
+
+   processUsers :: [String] -> IO ()
+   processUsers users = do
+     forM_ users $ \user -> do
+       putStrLn $ "正在初始化用户: " ++ user
+       -- 执行更多逻辑...
+
+3. sequence 与 sequence\_
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+将包含多个单子动作的列表，执行并汇总为一个产生结果列表的单子动作：
+
+.. code:: haskell
+
+   sequence :: Monad m => [m a] -> m [a]
+
+.. code:: text
+
+   ghci> sequence [Just 1, Just 2, Just 3]
+   Just [1,2,3]
+   ghci> sequence [Just 1, Nothing, Just 3]
+   Nothing
+
+4. when 与 unless：单子条件分支
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+在 ``do`` 块中，如果只想在满足条件时执行某个操作，写 ``if cond then action else return ()`` 极其冗长。使用 ``when`` 与 ``unless`` 可以一气呵成：
+
+.. code:: haskell
+
+   import Control.Monad (when)
+
+   logWarning :: Bool -> String -> IO ()
+   logWarning isSevere msg = do
+     when isSevere $ do
+       putStrLn $ "【警告】: " ++ msg
+
+5. filterM：单子过滤与生成幂集
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+在单子环境中过滤列表：
+
+.. code:: haskell
+
+   filterM :: Monad m => (a -> m Bool) -> [a] -> m [a]
+
+利用列表的非确定性单子特性，只需一行代码即可求出集合的\ **全子集（幂集，Powerset）**\ ：
+
+.. code:: haskell
+
+   powerset :: [a] -> [[a]]
+   powerset = filterM (\_ -> [True, False])
+
+.. code:: text
+
+   ghci> powerset [1, 2]
+   [[1,2],[1],[2],[]]
+
+6. 鱼骨操作符 (>=>)：单子函数的直接复合
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+如果两个函数都产生单子上下文（\ ``f :: a -> m b`` 与 ``g :: b -> m c``\ ），普通的点号 ``.`` 无法直接复合它们。来自 ``Control.Monad`` 的 **Kleisli 组合子（>=>）**\ 能直接将它们拼接起来：
+
+.. code:: haskell
+
+   (>=>) :: Monad m => (a -> m b) -> (b -> m c) -> (a -> m c)
+   (f >=> g) x = f x >>= g
+
+.. code:: haskell
+
+   -- 管道拼接两个可能失败的安全函数：
+   half :: Int -> Maybe Int
+   half x = if even x then Just (x `div` 2) else Nothing
+
+   quarter :: Int -> Maybe Int
+   quarter = half >=> half
+
+.. code:: text
+
+   ghci> quarter 8
+   Just 2
+   ghci> quarter 6
+   Nothing
