@@ -15,10 +15,14 @@ Haskell 生态在 ``containers``\ 、\ ``vector``\ 、\ ``text`` 与 ``bytestrin
 3. **两端操作不对称**\ ：头部插入 O(1)，但尾部追加或弹出是 O(n)。
 4. **String 的内存开销大**\ ：\ ``String`` 就是 ``[Char]``\ ，是装箱的链表。在 64 位机器上，每保存一个字符大约需要 40 字节。
 
+默认规则很简单：先用列表。它和惰性求值、模式匹配、\ ``Data.List`` 的配合最好，大多数中间数据也只是顺序走一遍。只有当代码里出现“按键找”“按下标取”“两头进出”这些动作时，再换成本章对应的容器。换的成本很低，因为这些容器都提供 ``fromList`` 和 ``toList``\ ，和列表之间来回转换是常规操作。
+
 键值映射：Data.Map
 --------------------------------------------------------------------------------
 
-``Data.Map`` 位于 GHC 自带的 ``containers`` 库中，基于\ **平衡二叉树（Size-Balanced Trees）**\ 实现。插入、删除和查找的时间复杂度都是 **O(log n)**\ 。
+``Data.Map`` 位于 GHC 自带的 ``containers`` 库中，基于\ **平衡二叉树（Size-Balanced Trees）**\ 实现。插入、删除和查找的时间复杂度都是 **O(log n)**\ 。因为是有序树，键的类型必须是 ``Ord`` 的实例，这也是为什么 ``Map`` 的函数签名里都带着 ``Ord k =>``\ ，以及 ``toList`` 出来的结果总是按键排好序的。
+
+键是 ``Int`` 时，同一个库里的 ``Data.IntMap`` 更快。键没有自然顺序、或者需要哈希表那样的平均 O(1) 查找时，用 ``unordered-containers`` 包的 ``Data.HashMap.Strict``\ ，它要求键是 ``Hashable`` 的实例。三者的 API 几乎一样，本章只讲 ``Map``\ 。
 
 导入方式
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -32,77 +36,101 @@ Haskell 生态在 ``containers``\ 、\ ``vector``\ 、\ ``text`` 与 ``bytestrin
    import qualified Data.Map.Strict as Map
    import Data.Map.Strict (Map)
 
-创建与构建
+用词频统计走一遍 Map
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-- ``Map.empty``\ ：空映射。
-- ``Map.singleton k v``\ ：只包含一个键值对的映射。
-- ``Map.fromList :: Ord k => [(k, a)] -> Map k a``\ ：从二元组列表构建。存在重复键时，后面的值覆盖前面的值。
-- ``Map.fromListWith :: Ord k => (a -> a -> a) -> [(k, a)] -> Map k a``\ ：用自定义函数合并重复键的值。
+下面用一个任务串起 ``Map`` 最常用的操作：统计一段文本里每个词出现的次数，然后回答几个问题。
 
-.. code:: text
-
-   ghci> m1 = Map.fromList [("Alice", 95), ("Bob", 80)]
-   ghci> m1
-   fromList [("Alice",95),("Bob",80)]
-
-   -- 遇到相同键时把数值相加，而不是覆盖：
-   ghci> Map.fromListWith (+) [("Apple", 10), ("Banana", 5), ("Apple", 20)]
-   fromList [("Apple",30),("Banana",5)]
-
-查询
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-- ``Map.lookup :: Ord k => k -> Map k a -> Maybe a``\ ：找到返回 ``Just val``\ ，不存在返回 ``Nothing``\ ，不会抛异常。
-- ``Map.findWithDefault :: Ord k => a -> k -> Map k a -> a``\ ：带默认值的查找。
-- ``Map.member :: Ord k => k -> Map k a -> Bool``\ ：检查键是否存在。
-- ``Map.size :: Map k a -> Int``\ ：键值对总数。
-
-.. code:: text
-
-   ghci> Map.lookup "Alice" m1
-   Just 95
-   ghci> Map.lookup "David" m1
-   Nothing
-   ghci> Map.findWithDefault 0 "David" m1
-   0
-   ghci> Map.member "Bob" m1
-   True
-
-增删与修改
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-- ``Map.insert :: Ord k => k -> a -> Map k a -> Map k a``\ ：插入或覆盖。
-- ``Map.insertWith :: Ord k => (a -> a -> a) -> k -> a -> Map k a -> Map k a``\ ：键已存在时，用函数合并旧值与新值。
-- ``Map.delete :: Ord k => k -> Map k a -> Map k a``\ ：删除指定键。
-- ``Map.adjust :: Ord k => (a -> a) -> k -> Map k a -> Map k a``\ ：仅在键存在时修改对应的值。
-
-集合运算与导出
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-- ``Map.union :: Ord k => Map k a -> Map k a -> Map k a``\ ：合并两个映射（键冲突时取左侧）。
-- ``Map.intersection :: Ord k => Map k a -> Map k b -> Map k a``\ ：取两者共有的键。
-- ``Map.difference :: Ord k => Map k a -> Map k b -> Map k a``\ ：差集。
-- ``Map.keys :: Map k a -> [k]``\ ：所有键。
-- ``Map.elems :: Map k a -> [a]``\ ：所有值。
-- ``Map.toList :: Map k a -> [(k, a)]``\ ：转换回二元组列表。
-
-示例：统计词频
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+**构建**\ 。把文本切成词，每个词配上计数 1，交给 ``fromListWith``\ 。它和 ``fromList`` 的区别在于遇到重复键时不是覆盖，而是用给定的函数合并两个值：
 
 .. code:: haskell
 
    import qualified Data.Map.Strict as Map
+   import Data.Map.Strict (Map)
+   import Data.List (sortOn)
+   import Data.Ord (Down (..))
 
-   wordFrequency :: String -> Map.Map String Int
-   wordFrequency text =
-     let wordList = words text
-     in  Map.fromListWith (+) [ (w, 1) | w <- wordList ]
+   wordFrequency :: String -> Map String Int
+   wordFrequency text = Map.fromListWith (+) [ (w, 1) | w <- words text ]
 
 .. code:: text
 
-   ghci> wordFrequency "haskell is pure haskell is awesome"
-   fromList [("awesome",1),("haskell",2),("is",2),("pure",1)]
+   ghci> freq = wordFrequency "haskell is pure haskell is lazy"
+   ghci> freq
+   fromList [("haskell",2),("is",2),("lazy",1),("pure",1)]
+
+   ghci> Map.fromList [("a", 1), ("a", 2)]
+   fromList [("a",2)]
+
+从空 ``Map.empty`` 出发逐个 ``Map.insert`` 也能建出同样的表，但一次性从列表构建更常见。
+
+**查询**\ 。某个词出现了几次？\ ``lookup`` 返回 ``Maybe``\ ，键不存在时得到 ``Nothing`` 而不是抛异常；确定要一个默认值时用 ``findWithDefault``\ ；只关心有没有时用 ``member``\ ：
+
+.. code:: text
+
+   ghci> Map.lookup "haskell" freq
+   Just 2
+   ghci> Map.lookup "python" freq
+   Nothing
+   ghci> Map.findWithDefault 0 "python" freq
+   0
+   ghci> Map.member "is" freq
+   True
+   ghci> Map.size freq
+   4
+
+**更新**\ 。又读到一个词，或者又来了一整段文本。\ ``insertWith`` 在键已存在时用函数合并旧值与新值，\ ``unionWith`` 对两张表做同样的事；不带 ``With`` 的 ``insert`` 和 ``union`` 则是直接覆盖，\ ``union`` 冲突时取左边。\ ``adjust`` 只在键存在时修改值：
+
+.. code:: text
+
+   ghci> Map.insertWith (+) "haskell" 1 freq
+   fromList [("haskell",3),("is",2),("lazy",1),("pure",1)]
+
+   ghci> freq2 = wordFrequency "haskell is fun"
+   ghci> Map.unionWith (+) freq freq2
+   fromList [("fun",1),("haskell",3),("is",3),("lazy",1),("pure",1)]
+
+   ghci> Map.adjust (* 10) "lazy" freq
+   fromList [("haskell",2),("is",2),("lazy",10),("pure",1)]
+
+做完这些之后再看 ``freq``\ ，它一点没变：
+
+.. code:: text
+
+   ghci> freq
+   fromList [("haskell",2),("is",2),("lazy",1),("pure",1)]
+
+这是和其他语言的 ``HashMap.put`` 最大的不同。\ ``Map`` 是不可变的，每个更新操作都返回一张新表，旧表仍然有效，可以继续用。这并不意味着每次都复制整棵树：新表和旧表共享所有没有改动的子树，只有从根到被修改节点的一条路径是新分配的，所以代价仍是 **O(log n)**\ 。多个版本同时存在也是安全的，比如保留修改前的快照用于对比或回滚。
+
+**删除**\ 。去掉停用词。删一个键用 ``delete``\ ，按条件批量删用 ``filterWithKey``\ ：
+
+.. code:: text
+
+   ghci> Map.delete "is" freq
+   fromList [("haskell",2),("lazy",1),("pure",1)]
+   ghci> stopWords = ["is", "the", "a"]
+   ghci> Map.filterWithKey (\w _ -> w `notElem` stopWords) freq
+   fromList [("haskell",2),("lazy",1),("pure",1)]
+
+**导出**\ 。出现最多的前 N 个词。\ ``toList`` 把表变回按键排序的二元组列表，然后就回到了上一章的列表处理：
+
+.. code:: haskell
+
+   topN :: Int -> Map String Int -> [(String, Int)]
+   topN n = take n . sortOn (Down . snd) . Map.toList
+
+.. code:: text
+
+   ghci> topN 2 freq
+   [("haskell",2),("is",2)]
+   ghci> Map.keys freq
+   ["haskell","is","lazy","pure"]
+   ghci> Map.elems freq
+   [2,2,1,1]
+
+两张表之间的集合运算按键进行：\ ``Map.intersection freq freq2`` 保留两段文本共有的词，\ ``Map.difference freq freq2`` 保留只在第一段出现的词，值取自左边的表。
+
+不用导出也能直接统计。\ ``Map k v`` 是 Foldable 的实例（见 Foldable 与 Traversable 一章），所以 ``sum freq`` 得到总词数 6，\ ``length freq`` 得到 4，\ ``elem 2 freq`` 检查有没有出现两次的词，这些函数遍历的是值。它也是 Monoid 的实例（见 Monoid 一章），\ ``freq <> freq2`` 就是 ``Map.union``\ 。
 
 有序集合：Data.Set
 --------------------------------------------------------------------------------
@@ -135,6 +163,8 @@ Haskell 生态在 ``containers``\ 、\ ``vector``\ 、\ ``text`` 与 ``bytestrin
    fromList [3]
    ghci> Set.difference s1 s2
    fromList [1,2]
+
+``Set`` 和 ``Map`` 一样是 Foldable 和 Monoid 的实例：\ ``length``\ 、\ ``sum``\ 、\ ``elem`` 直接可用，\ ``s1 <> s2`` 就是并集。列表去重最省事的写法就是 ``Set.toList (Set.fromList xs)``\ ，O(n log n)，比上一章的 ``nub`` 快得多，代价是结果按大小排序而不是保留原顺序。
 
 连续内存数组：Data.Vector
 --------------------------------------------------------------------------------
@@ -173,15 +203,7 @@ Haskell 生态在 ``containers``\ 、\ ``vector``\ 、\ ``text`` 与 ``bytestrin
 Text 与 ByteString
 --------------------------------------------------------------------------------
 
-如前所述，原生 ``String``\ （\ ``[Char]``\ ）处理大量字符时内存开销较大。实际项目中通常使用两个库：
-
-- ``Data.Text``\ （\ ``text`` 包）：以 UTF-8 编码的连续内存块存储文本，用于所有面向人的字符串。它的 API 和使用方式在字符串一章已经详细介绍。
-- ``Data.ByteString``\ （\ ``bytestring`` 包）：8 位无符号字节（\ ``Word8``\ ）数组，用于网络数据包、二进制文件和编码未知的数据。它有两个版本：
-
-  - **严格版本（Data.ByteString）**\ ：单一连续内存块，适合固定长度的报文头与数据帧。
-  - **惰性版本（Data.ByteString.Lazy）**\ ：由一系列 32KB 内存块构成的惰性链表，可以在常数内存下流式读写很大的文件。
-
-两者之间的转换需要明确编码，见字符串一章的 ``encodeUtf8`` 与 ``decodeUtf8``\ 。
+原生 ``String`` 处理大量字符时内存开销大。实际项目里面向人的文本用 ``text`` 包的 ``Text``\ ，网络数据包、二进制文件和编码未知的数据用 ``bytestring`` 包的 ``ByteString``\ ，后者有严格和惰性两个版本，惰性版本可以在常数内存下流式处理大文件。它们的 API、\ ``OverloadedStrings`` 的用法、三者之间怎么选以及编解码转换，字符串一章已经完整介绍，这里不再重复。
 
 数据结构选型
 --------------------------------------------------------------------------------
@@ -208,9 +230,14 @@ Text 与 ByteString
    * - 双端入队出队、拼接
      - ``Seq a`` （Data.Sequence）
      - 2-3 指状树，两端均为 **O(1)**\ ，适合队列与图遍历
-   * - 用户可见的文本
-     - ``Text`` （Data.Text）
-     - UTF-8 编码的连续内存块，无装箱开销
-   * - 文件 IO、网络协议
-     - ``ByteString`` （Data.ByteString）
-     - 原始字节块，有严格与惰性两种版本
+
+文本类型的选择见字符串一章的表格。
+
+小结
+--------------------------------------------------------------------------------
+
+- 默认用列表，出现按键查找、按下标访问、两端进出时再换容器，\ ``fromList`` 和 ``toList`` 负责来回转换。
+- ``Map`` 是有序平衡树，键要求 ``Ord``\ ，查找与更新 O(log n)；每个更新操作返回新表，旧表不变，共享子树使得这样做并不昂贵。
+- ``fromListWith`` 与 ``insertWith``\ 、\ ``unionWith`` 用合并函数处理重复键，是统计类任务的核心。
+- ``Set`` 保存不重复的元素，\ ``Vector`` 提供 O(1) 下标访问，\ ``Seq`` 两端操作都是 O(1)。
+- ``Map``\ 、\ ``Set``\ 、\ ``Seq`` 都是 Foldable 和 Monoid 的实例，\ ``length``\ 、\ ``sum``\ 、\ ``elem`` 和 ``<>`` 直接可用。

@@ -172,39 +172,87 @@ Haskell 的列表不是 C/C++ 或 Java 中的连续内存动态数组，而是\ 
 变换、过滤与排序（Data.List）
 --------------------------------------------------------------------------------
 
-map 与 filter
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-- ``map :: (a -> b) -> [a] -> [b]``\ ：对每个元素应用函数。
-- ``filter :: (a -> Bool) -> [a] -> [a]``\ ：保留满足条件的元素。
-
-列表展平：concat 与 concatMap
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-- ``concat :: [[a]] -> [a]``\ ：把嵌套列表压平为单层列表。
-- ``concatMap :: (a -> [b]) -> [a] -> [b]``\ ：先映射再压平。
-
-排序、去重与查找
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+列表处理的大部分工作可以归结为三件事：变换每个元素、按条件筛选、按某个键排序。下面用一份成绩单贯穿这几组函数：
 
 .. code:: haskell
 
-   import Data.List
+   import Data.List (sortOn, partition, nub, find, intercalate)
+   import Data.Ord (Down (..))
 
-- ``sort :: Ord a => [a] -> [a]``\ ：稳定的归并排序，对部分有序的数据表现较好。
-- ``sortBy :: (a -> a -> Ordering) -> [a] -> [a]``\ ：用自定义比较函数排序。
-- ``partition :: (a -> Bool) -> [a] -> ([a], [a])``\ ：一次遍历把列表拆成满足条件与不满足条件的两部分。
-- ``find :: (a -> Bool) -> [a] -> Maybe a``\ ：查找第一个满足条件的元素（全函数，返回 ``Maybe``\ ）。
-- ``lookup :: Eq a => a -> [(a, b)] -> Maybe b``\ ：在关联列表中按键查找。
-- ``intersperse :: a -> [a] -> [a]``\ ：在元素之间插入分隔元素。
-- ``intercalate :: [a] -> [[a]] -> [a]``\ ：在多个子列表之间插入分隔列表并拼接（即其他语言中的 ``join``\ ）。
+   scores :: [(String, Int)]
+   scores = [("Alice", 92), ("Bob", 58), ("Carol", 75), ("Dave", 58)]
+
+map 与 filter
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``map :: (a -> b) -> [a] -> [b]`` 对每个元素应用函数，\ ``filter :: (a -> Bool) -> [a] -> [a]`` 只保留满足条件的元素。要一份名单，要一份及格名单：
 
 .. code:: text
 
-   ghci> partition odd [1..6]
-   ([1,3,5],[2,4,6])
-   ghci> intercalate ", " ["Apple", "Banana", "Orange"]
-   "Apple, Banana, Orange"
+   ghci> map fst scores
+   ["Alice","Bob","Carol","Dave"]
+   ghci> filter ((>= 60) . snd) scores
+   [("Alice",92),("Carol",75)]
+
+``(>= 60) . snd`` 是运算符截断与函数组合的搭配：先取二元组的第二项，再和 60 比较。这种“组合出一个谓词”的写法在列表处理里随处可见。
+
+排序与分组
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``sort :: Ord a => [a] -> [a]`` 直接按元素排序。更常用的是 ``sortOn``\ ，按一个键函数排序；降序用 ``Data.Ord`` 的 ``Down`` 包一层把比较方向翻转。需要完全自定义比较逻辑时才用 ``sortBy``\ 。\ ``partition`` 一次遍历把列表拆成满足条件与不满足条件的两部分：
+
+.. code:: text
+
+   ghci> sortOn snd scores
+   [("Bob",58),("Dave",58),("Carol",75),("Alice",92)]
+   ghci> sortOn (Down . snd) scores
+   [("Alice",92),("Carol",75),("Bob",58),("Dave",58)]
+   ghci> partition ((>= 60) . snd) scores
+   ([("Alice",92),("Carol",75)],[("Bob",58),("Dave",58)])
+
+排序是稳定的，分数相同的 Bob 和 Dave 保持原有顺序。这几个函数都是“列表进、列表出”，所以可以用 ``.`` 串成管道。按分数从高到低列出及格者的名字：
+
+.. code:: haskell
+
+   passedNames :: [(String, Int)] -> [String]
+   passedNames = map fst . filter ((>= 60) . snd) . sortOn (Down . snd)
+
+.. code:: text
+
+   ghci> passedNames scores
+   ["Alice","Carol"]
+
+读的时候从右往左：先排序，再筛选，最后取名字。这是 Haskell 处理数据最常见的形状，对应其他语言里 ``stream().filter().map()`` 这类链式调用。
+
+去重与查找
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- ``nub :: Eq a => [a] -> [a]``\ ：去重，保留首次出现的顺序。它只要求 ``Eq``\ ，所以是 **O(n²)**\ ，数据量大时应改用 ``Data.Set``\ 。
+- ``find :: (a -> Bool) -> [a] -> Maybe a``\ ：找第一个满足条件的元素。
+- ``lookup :: Eq a => a -> [(a, b)] -> Maybe b``\ ：在关联列表中按键查找。
+
+.. code:: text
+
+   ghci> nub (map snd scores)
+   [92,58,75]
+   ghci> find ((> 90) . snd) scores
+   Just ("Alice",92)
+   ghci> lookup "Carol" scores
+   Just 75
+
+``find`` 和 ``lookup`` 找不到时返回 ``Nothing`` 而不是抛异常，是全函数。\ ``lookup`` 每次都要线性扫描，键一多就该换成下一章的 ``Map``\ 。
+
+展平与拼接
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- ``concat :: [[a]] -> [a]``\ ：把嵌套列表压平为单层。
+- ``concatMap :: (a -> [b]) -> [a] -> [b]``\ ：每个元素映射成一个列表，再压平。
+- ``intercalate :: [a] -> [[a]] -> [a]``\ ：在子列表之间插入分隔列表再拼接，即其他语言的 ``join``\ 。
+
+.. code:: text
+
+   ghci> intercalate ", " (map fst scores)
+   "Alice, Bob, Carol, Dave"
 
 拉链操作（Zipping）
 --------------------------------------------------------------------------------
@@ -232,6 +280,20 @@ map 与 filter
    -- 勾股数（满足 a² + b² = c² 且周长为 24 的直角三角形）：
    ghci> [ (a, b, c) | c <- [1..10], b <- [1..c], a <- [1..b], a^2 + b^2 == c^2, a + b + c == 24 ]
    [(6,8,10)]
+
+它不是新的能力，而是上一节几个函数的语法糖：一个生成器加过滤条件就是 ``filter`` 加 ``map``\ ，多个生成器就是嵌套的 ``concatMap``\ ：
+
+.. code:: text
+
+   ghci> [ fst p | p <- scores, snd p >= 60 ]
+   ["Alice","Carol"]
+   ghci> map fst (filter ((>= 60) . snd) scores)
+   ["Alice","Carol"]
+
+   ghci> [ (x, y) | x <- [1, 2], y <- "ab" ]
+   [(1,'a'),(1,'b'),(2,'a'),(2,'b')]
+
+第二个例子等价于 ``concatMap (\x -> map (\y -> (x, y)) "ab") [1, 2]``\ 。两种写法按可读性挑选：条件和变换都简单时推导式更直观，需要复用谓词或者串进管道时用函数形式。
 
 列表的脊柱（Spine）与惰性求值
 --------------------------------------------------------------------------------
@@ -350,6 +412,6 @@ Haskell 列表的每个 ``(:)`` 就是这样一个节点，两个字段分别对
 
 - 列表是递归单向链表，头部插入 O(1)，尾部追加 O(n)，避免在循环中尾部追加。
 - ``head``\ /\ ``tail`` 等是偏函数，可以用模式匹配或 ``Data.List.NonEmpty`` 代替。
-- ``Data.List`` 提供了 ``partition``\ 、\ ``find``\ 、\ ``sort`` 等常用函数。
+- 列表处理的常见形状是 ``map f . filter p . sortOn g`` 这样的管道，列表推导式是 ``map``\ 、\ ``filter``\ 、\ ``concatMap`` 的语法糖。
 - ``(:)`` 节点就是 C 的 ``struct Node { value; next }``\ ，也就是 Lisp 的 cons cell。\ ``head``\ /\ ``tail`` 对应 ``car``\ /\ ``cdr``\ 。
 - 脊柱（``next`` 链）与元素（``value``\ ）的求值相互独立，两者都可以是未求值的 Thunk，这是列表可以惰性流式处理的基础。
