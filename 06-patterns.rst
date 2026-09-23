@@ -220,7 +220,7 @@ case-of 表达式
    countEvenSquares' :: [Int] -> Int
    countEvenSquares' = length . filter even . map (^2)
 
-无点风格使代码聚焦于“数据流经的变换管道”，而不是临时变量的逐层传递。从 ``countEvenSquares xs = ...`` 到 ``countEvenSquares' = ...``\ ，两边同时去掉的那个 ``xs`` 就是第一章的 η 约简，\ ``.`` 只是让约简后的右侧仍然可读。
+无点风格使代码聚焦于“数据流经的变换管道”，而不是临时变量的逐层传递。从 ``countEvenSquares xs = ...`` 到 ``countEvenSquares' = ...``\ ，两边同时去掉的那个 ``xs`` 就是第一章 ``addOne = add 1`` 的消参数写法，\ ``.`` 只是让消掉参数后的右侧仍然可读。
 
 小结
 --------------------------------------------------------------------------------
