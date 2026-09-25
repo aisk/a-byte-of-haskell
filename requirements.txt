@@ -1,4 +1,4 @@
-sphinx<7.0.0  # for typlog theme
+sphinx<10.0.0  # for typlog theme
 sphinx-typlog-theme
 sphinxcontrib-mermaid
 sphinxcontrib-jquery  # sphinx>=6 no longer bundles jQuery, the theme needs it
